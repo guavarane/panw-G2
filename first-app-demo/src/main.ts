@@ -40,10 +40,13 @@ async function main() {
   setText(detailEl, 'ClearPath listening — display is on glasses simulator/hardware.')
 
   const rms = createRmsTracker({ baselineHalfLifeSeconds: 10 })
+  // Tuned to catch short transients like footsteps (which were missed at 2.5x/150ms).
+  // 1.8x for one full frame (100 ms) is loose enough for a single footstep impact
+  // but strict enough to avoid triggering on breathing or keyboard typing.
   const spikes = createSpikeDetector({
-    ratioThreshold: 2.5,
-    minDurationMs: 150,
-    cooldownMs: 1000,
+    ratioThreshold: 1.8,
+    minDurationMs: 100,
+    cooldownMs: 800,
   })
   const approach = createApproachDetector()
   const sampleBuffer = createSampleBuffer(1200)   // keep last 1.2 s for heuristic + LLM classification
