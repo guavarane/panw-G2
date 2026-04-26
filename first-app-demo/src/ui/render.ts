@@ -1,5 +1,6 @@
 import { TextContainerUpgrade } from '@evenrealities/even_hub_sdk'
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
+import type { DirectionEstimate } from '../audio/direction'
 import type { AppState } from '../state/machine'
 import { MAIN_CONTAINER_ID, MAIN_CONTAINER_NAME } from './containers'
 
@@ -10,13 +11,27 @@ function makeBar(value: number, scale = 1): string {
   return '#'.repeat(fill) + '-'.repeat(BAR_WIDTH - fill)
 }
 
-export function renderState(state: AppState, currentRms: number, baselineRms: number): string {
+function formatDirection(estimate: DirectionEstimate | null): string {
+  if (!estimate) return 'listening'
+  if (!estimate.available) return estimate.reason
+  const angle = estimate.relativeAzimuthDeg?.toFixed(0) ?? '?'
+  const confidence = Math.round(estimate.confidence * 100)
+  return `${estimate.label} (${angle} deg, ${confidence}%)`
+}
+
+export function renderState(
+  state: AppState,
+  currentRms: number,
+  baselineRms: number,
+  direction: DirectionEstimate | null = null,
+): string {
   if (state.kind === 'IDLE') {
     return (
       `[*] listening\n` +
       `\n` +
       `level:    ${makeBar(currentRms, 6)}\n` +
       `baseline: ${baselineRms.toFixed(4)}\n` +
+      `location: ${formatDirection(direction)}\n` +
       `\n` +
       `double-tap to exit`
     )
@@ -26,6 +41,7 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
   return (
     `*** SOUND DETECTED ***\n` +
     `\n` +
+    `location:  ${formatDirection(state.spike.direction)}\n` +
     `intensity: ${makeBar(intensity)}\n` +
     `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
     `ratio:     ${state.spike.ratio.toFixed(1)}x baseline\n`

@@ -1,12 +1,17 @@
 import type { SpikeEvent } from '../audio/spike-detector'
+import type { DirectionEstimate } from '../audio/direction'
 
 export type AppState =
   | { kind: 'IDLE' }
-  | { kind: 'ALERTING'; spike: SpikeEvent; startedAt: number }
+  | { kind: 'ALERTING'; spike: LocalizedSpikeEvent; startedAt: number }
+
+export type LocalizedSpikeEvent = SpikeEvent & {
+  direction: DirectionEstimate | null
+}
 
 export interface StateMachine {
   current(): AppState
-  alert(spike: SpikeEvent): void
+  alert(spike: LocalizedSpikeEvent): void
   tick(now: number): void
   onChange(handler: (state: AppState) => void): () => void
 }
