@@ -1,88 +1,93 @@
 import './styles.css'
 import {
-  CreateStartUpPageContainer,
+  OsEventTypeList,
   StartUpPageCreateResult,
-  TextContainerProperty,
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
+import { createAudioStream } from './audio/stream'
+import { createRmsTracker } from './audio/rms'
+import { createSpikeDetector } from './audio/spike-detector'
+import { buildStartupPage } from './ui/containers'
+import { Renderer, renderState } from './ui/render'
+import { createStateMachine } from './state/machine'
 
-const bridgeStatus = document.querySelector<HTMLDListElement>('#bridge-status')
-const pageStatus = document.querySelector<HTMLDListElement>('#page-status')
-const detail = document.querySelector<HTMLParagraphElement>('#detail')
+const bridgeStatusEl = document.querySelector<HTMLElement>('#bridge-status')
+const pageStatusEl = document.querySelector<HTMLElement>('#page-status')
+const detailEl = document.querySelector<HTMLElement>('#detail')
 
-const GLASSES_TEXT = 'Hello from G2!'
-
-function setText(node: Element | null, text: string) {
-  if (node) {
-    node.textContent = text
-  }
+function setText(el: HTMLElement | null, text: string) {
+  if (el) el.textContent = text
 }
 
-function describeResult(result: StartUpPageCreateResult) {
-  switch (result) {
-    case StartUpPageCreateResult.success:
-      return 'Success'
-    case StartUpPageCreateResult.invalid:
-      return 'Invalid container'
-    case StartUpPageCreateResult.oversize:
-      return 'Container too large'
-    case StartUpPageCreateResult.outOfMemory:
-      return 'Out of memory'
-    default:
-      return `Unknown result ${result}`
+async function main() {
+  setText(bridgeStatusEl, 'Waiting')
+  setText(detailEl, 'Connecting to Even Hub bridge...')
+
+  const bridge = await waitForEvenAppBridge()
+  setText(bridgeStatusEl, 'Ready')
+
+  const result = await bridge.createStartUpPageContainer(buildStartupPage('[*] starting...'))
+  if (result !== StartUpPageCreateResult.success) {
+    setText(pageStatusEl, `Failed (${result})`)
+    setText(detailEl, `createStartUpPageContainer returned ${result}`)
+    throw new Error(`page create failed (${result})`)
   }
+  setText(pageStatusEl, 'OK')
+  setText(detailEl, 'ClearPath listening — display is on glasses simulator/hardware.')
+
+  const rms = createRmsTracker({ baselineHalfLifeSeconds: 10 })
+  const spikes = createSpikeDetector({
+    ratioThreshold: 2.5,
+    minDurationMs: 150,
+    cooldownMs: 1000,
+  })
+  const fsm = createStateMachine()
+  const renderer = new Renderer(bridge, 200)
+  const audio = createAudioStream(bridge)
+
+  audio.onFrame((samples, frameIndex) => {
+    rms.push(samples)
+    const spike = spikes.feed(rms.getCurrent(), rms.getBaseline(), frameIndex)
+    if (spike) {
+      console.log(
+        `[clearpath] SPIKE frame=${spike.frameIndex} ratio=${spike.ratio.toFixed(2)} peak=${spike.peakRms.toFixed(4)} dur=${spike.durationMs}ms`,
+      )
+      fsm.alert(spike)
+    }
+    if (frameIndex % 50 === 0) {
+      console.log(
+        `[clearpath] frame=${frameIndex} rms=${rms.getCurrent().toFixed(4)} baseline=${rms.getBaseline().toFixed(4)} state=${fsm.current().kind}`,
+      )
+    }
+    renderer.render(renderState(fsm.current(), rms.getCurrent(), rms.getBaseline()))
+  })
+
+  fsm.onChange(state => {
+    console.log(`[clearpath] state -> ${state.kind}`)
+    renderer.render(renderState(state, rms.getCurrent(), rms.getBaseline()), true)
+  })
+
+  // Periodic tick for ALERTING auto-clear (4s)
+  setInterval(() => fsm.tick(Date.now()), 250)
+
+  await audio.start()
+  console.log('[clearpath] audio capture started')
+
+  // Double-tap to exit (works whether the event arrives via sysEvent or textEvent)
+  bridge.onEvenHubEvent(async event => {
+    const sysType = event.sysEvent?.eventType ?? null
+    const textType = event.textEvent?.eventType ?? null
+    if (
+      sysType === OsEventTypeList.DOUBLE_CLICK_EVENT ||
+      textType === OsEventTypeList.DOUBLE_CLICK_EVENT
+    ) {
+      await audio.stop()
+      bridge.shutDownPageContainer(1)
+    }
+  })
 }
 
-async function createStartupPage() {
-  setText(bridgeStatus, 'Waiting')
-  setText(pageStatus, 'Not sent')
-  setText(detail, 'Preparing the Even App bridge.')
-
-  try {
-    const bridge = await waitForEvenAppBridge()
-    setText(bridgeStatus, 'Ready')
-    setText(detail, 'Sending the startup page to the G2 display.')
-
-    const mainText = new TextContainerProperty({
-      xPosition: 0,
-      yPosition: 0,
-      width: 576,
-      height: 288,
-      borderWidth: 0,
-      borderColor: 5,
-      paddingLength: 4,
-      containerID: 1,
-      containerName: 'main',
-      content: GLASSES_TEXT,
-      isEventCapture: 1,
-    })
-
-    const result = await bridge.createStartUpPageContainer(
-      new CreateStartUpPageContainer({
-        containerTotalNum: 1,
-        textObject: [mainText],
-      }),
-    )
-
-    const resultText = describeResult(result)
-    setText(pageStatus, resultText)
-    setText(
-      detail,
-      result === StartUpPageCreateResult.success
-        ? 'The startup page is live on the simulated or connected glasses.'
-        : `The bridge replied with: ${resultText}. Run through the simulator or hardware WebView for a real bridge response.`,
-    )
-    console.log('[first-app-demo] startup page result:', result, resultText)
-  } catch (error) {
-    setText(bridgeStatus, 'Unavailable')
-    setText(pageStatus, 'Skipped')
-    setText(
-      detail,
-      error instanceof Error ? error.message : 'The Even App bridge was not available.',
-    )
-    console.error('[first-app-demo] failed to create startup page:', error)
-  }
-}
-
-createStartupPage()
-
+main().catch(err => {
+  console.error('[clearpath] fatal:', err)
+  setText(detailEl, err instanceof Error ? err.message : String(err))
+})

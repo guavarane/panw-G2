@@ -1,12 +1,16 @@
 {
-  "package_id": "com.example.firstappdemo",
+  "package_id": "com.example.clearpath",
   "edition": "202601",
-  "name": "First App Demo",
+  "name": "ClearPath",
   "version": "0.1.0",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.10",
   "entrypoint": "index.html",
-  "permissions": [],
+  "permissions": [
+    {
+      "name": "g2-microphone",
+      "desc": "Listen for nearby sounds (people, vehicles, bicycles) to provide spatial-awareness alerts for deaf and hard-of-hearing wearers."
+    }
+  ],
   "supported_languages": ["en"]
 }
-
