@@ -5,10 +5,10 @@ export const MAIN_CONTAINER_NAME = 'main'
 
 export function buildStartupPage(initialContent: string): CreateStartUpPageContainer {
   const mainText = new TextContainerProperty({
-    xPosition: 0,
-    yPosition: 0,
-    width: 576,
-    height: 288,
+    xPosition: 8,
+    yPosition: 8,
+    width: 560,
+    height: 272,
     borderWidth: 0,
     borderColor: 5,
     paddingLength: 4,

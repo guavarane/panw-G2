@@ -34,6 +34,11 @@ interface MicPosition {
 export interface DirectionEstimatorOptions {
   minSignalRms?: number
   minConfidence?: number
+  smoothingWindowFrames?: number
+  minStableFrames?: number
+  minStableShare?: number
+  switchMargin?: number
+  holdFrames?: number
   micLayout?: readonly MicPosition[]
 }
 
@@ -44,6 +49,22 @@ const DEFAULT_MIC_LAYOUT: readonly MicPosition[] = [
   { x: 1, y: -1 },
 ]
 const HISTORY_LIMIT = 20
+const DEFAULT_SMOOTHING_WINDOW_FRAMES = 30
+const DEFAULT_MIN_STABLE_FRAMES = 8
+const DEFAULT_MIN_STABLE_SHARE = 0.42
+const DEFAULT_SWITCH_MARGIN = 0.65
+const DEFAULT_HOLD_FRAMES = 45
+const SIDE_DEAD_ZONE_DEGREES = 25
+const REAR_DEAD_ZONE_DEGREES = 155
+
+interface DirectionVote {
+  label: string
+  score: number
+  count: number
+  x: number
+  y: number
+  latest: DirectionEstimate
+}
 
 function clamp(value: number, min = 0, max = 1): number {
   return Math.max(min, Math.min(max, value))
@@ -58,19 +79,12 @@ function normalizeSignedDegrees(value: number): number {
   return normalized === -180 ? 180 : normalized
 }
 
-function labelForAzimuth(degrees: number): string {
-  const labels = [
-    'ahead',
-    'front-right',
-    'right',
-    'back-right',
-    'behind',
-    'back-left',
-    'left',
-    'front-left',
-  ]
-  const unsigned = ((degrees % 360) + 360) % 360
-  return labels[Math.round(unsigned / 45) % labels.length]
+function labelForSide(degrees: number): 'left' | 'right' | null {
+  const absDegrees = Math.abs(degrees)
+  if (absDegrees < SIDE_DEAD_ZONE_DEGREES || absDegrees > REAR_DEAD_ZONE_DEGREES) {
+    return null
+  }
+  return degrees < 0 ? 'left' : 'right'
 }
 
 function calculateRms(samples: Float32Array): number {
@@ -78,6 +92,26 @@ function calculateRms(samples: Float32Array): number {
   let sumSq = 0
   for (let i = 0; i < samples.length; i++) sumSq += samples[i] * samples[i]
   return Math.sqrt(sumSq / samples.length)
+}
+
+function averageLevel(micLevels: readonly number[]): number {
+  if (micLevels.length === 0) return 0
+  return micLevels.reduce((sum, level) => sum + level, 0) / micLevels.length
+}
+
+function angleToUnitVector(degrees: number): { x: number; y: number } {
+  const radians = (degrees * Math.PI) / 180
+  return { x: Math.sin(radians), y: Math.cos(radians) }
+}
+
+function scoreEstimate(
+  estimate: DirectionEstimate,
+  frameIndex: number,
+  smoothingWindowFrames: number,
+): number {
+  const ageFrames = Math.max(0, frameIndex - estimate.frameIndex)
+  const recency = clamp(1 - ageFrames / smoothingWindowFrames, 0.35, 1)
+  return estimate.confidence * recency
 }
 
 function findOnsetIndex(samples: Float32Array): number {
@@ -117,18 +151,126 @@ function createUnavailableEstimate(
 export function createDirectionEstimator(
   opts: DirectionEstimatorOptions = {},
 ): DirectionEstimator {
-  const minSignalRms = opts.minSignalRms ?? 0.003
-  const minConfidence = opts.minConfidence ?? 0.2
+  const minSignalRms = opts.minSignalRms ?? 0.001
+  const minConfidence = opts.minConfidence ?? 0.08
+  const smoothingWindowFrames = opts.smoothingWindowFrames ?? DEFAULT_SMOOTHING_WINDOW_FRAMES
+  const minStableFrames = opts.minStableFrames ?? DEFAULT_MIN_STABLE_FRAMES
+  const minStableShare = opts.minStableShare ?? DEFAULT_MIN_STABLE_SHARE
+  const switchMargin = opts.switchMargin ?? DEFAULT_SWITCH_MARGIN
+  const holdFrames = opts.holdFrames ?? DEFAULT_HOLD_FRAMES
   const micLayout = opts.micLayout ?? DEFAULT_MIC_LAYOUT
   const history: DirectionEstimate[] = []
-  let latest: DirectionEstimate | null = null
+  let latestRaw: DirectionEstimate | null = null
+  let latestStable: DirectionEstimate | null = null
+  let lastStableFrame = -Infinity
   let latestImu: ImuSnapshot | null = null
 
-  function remember(estimate: DirectionEstimate): DirectionEstimate {
-    latest = estimate
+  function rememberRaw(estimate: DirectionEstimate): DirectionEstimate {
+    latestRaw = estimate
     history.push(estimate)
     while (history.length > HISTORY_LIMIT) history.shift()
     return estimate
+  }
+
+  function holdOrSettle(raw: DirectionEstimate): DirectionEstimate {
+    if (
+      latestStable?.available &&
+      raw.frameIndex - lastStableFrame <= holdFrames
+    ) {
+      latestStable = {
+        ...latestStable,
+        confidence: latestStable.confidence * 0.96,
+        reason: 'holding stable direction',
+        frameIndex: raw.frameIndex,
+        channelCount: raw.channelCount,
+        micLevels: raw.micLevels,
+        imu: raw.imu,
+      }
+      return latestStable
+    }
+
+    latestStable = raw.available
+      ? {
+          ...raw,
+          available: false,
+          label: 'unknown',
+          relativeAzimuthDeg: null,
+          confidence: 0,
+          reason: 'settling direction',
+        }
+      : raw
+    return latestStable
+  }
+
+  function stabilize(raw: DirectionEstimate): DirectionEstimate {
+    const candidates = history.filter(
+      estimate =>
+        estimate.available &&
+        estimate.relativeAzimuthDeg !== null &&
+        raw.frameIndex - estimate.frameIndex < smoothingWindowFrames,
+    )
+    if (candidates.length < minStableFrames) return holdOrSettle(raw)
+
+    const votes = new Map<string, DirectionVote>()
+    let totalScore = 0
+
+    for (const estimate of candidates) {
+      const score = scoreEstimate(estimate, raw.frameIndex, smoothingWindowFrames)
+      totalScore += score
+      const vote = votes.get(estimate.label) ?? {
+        label: estimate.label,
+        score: 0,
+        count: 0,
+        x: 0,
+        y: 0,
+        latest: estimate,
+      }
+      const vector = angleToUnitVector(estimate.relativeAzimuthDeg ?? 0)
+      vote.score += score
+      vote.count++
+      vote.x += vector.x * score
+      vote.y += vector.y * score
+      if (estimate.frameIndex > vote.latest.frameIndex) vote.latest = estimate
+      votes.set(estimate.label, vote)
+    }
+
+    const ranked = [...votes.values()].sort((a, b) => b.score - a.score)
+    const winner = ranked[0]
+    if (!winner || totalScore <= 0) return holdOrSettle(raw)
+
+    const currentScore = latestStable?.available
+      ? votes.get(latestStable.label)?.score ?? 0
+      : 0
+    const winnerShare = winner.score / totalScore
+    const switchIsWeak =
+      latestStable?.available &&
+      winner.label !== latestStable.label &&
+      winner.score < currentScore * (1 + switchMargin)
+
+    if (
+      winner.count < minStableFrames ||
+      winnerShare < minStableShare ||
+      switchIsWeak
+    ) {
+      return holdOrSettle(raw)
+    }
+
+    const relativeAzimuthDeg = normalizeSignedDegrees(
+      (Math.atan2(winner.x, winner.y) * 180) / Math.PI,
+    )
+    latestStable = {
+      ...winner.latest,
+      label: winner.label,
+      relativeAzimuthDeg,
+      confidence: clamp(winnerShare),
+      reason: 'stable rolling vote',
+      frameIndex: raw.frameIndex,
+      channelCount: raw.channelCount,
+      micLevels: raw.micLevels,
+      imu: raw.imu,
+    }
+    lastStableFrame = raw.frameIndex
+    return latestStable
   }
 
   return {
@@ -136,13 +278,16 @@ export function createDirectionEstimator(
       const imu = latestImu ? { ...latestImu } : null
 
       if (frame.channelCount !== 4 || frame.channels.length < 4) {
-        return remember(createUnavailableEstimate(frame, '4 mic stream missing', [], imu))
+        const raw = rememberRaw(createUnavailableEstimate(frame, '4 mic stream missing', [], imu))
+        return stabilize(raw)
       }
 
       const micLevels = frame.channels.slice(0, 4).map(calculateRms)
-      const averageLevel = micLevels.reduce((sum, level) => sum + level, 0) / micLevels.length
-      if (averageLevel < minSignalRms) {
-        return remember(createUnavailableEstimate(frame, 'signal too quiet', micLevels, imu))
+      if (averageLevel(micLevels) < minSignalRms) {
+        const raw = rememberRaw(
+          createUnavailableEstimate(frame, 'listening', micLevels, imu),
+        )
+        return stabilize(raw)
       }
 
       let weightedX = 0
@@ -157,7 +302,8 @@ export function createDirectionEstimator(
       }
 
       if (totalWeight <= 0) {
-        return remember(createUnavailableEstimate(frame, 'no mic energy', micLevels, imu))
+        const raw = rememberRaw(createUnavailableEstimate(frame, 'no mic energy', micLevels, imu))
+        return stabilize(raw)
       }
 
       const onsets = frame.channels.slice(0, 4).map(findOnsetIndex)
@@ -174,17 +320,24 @@ export function createDirectionEstimator(
       const vectorStrength = Math.sqrt(combinedX * combinedX + combinedY * combinedY)
       const confidence = clamp(vectorStrength / 0.45)
       if (confidence < minConfidence) {
-        const estimate = createUnavailableEstimate(frame, 'centered or unclear', micLevels, imu)
-        return remember({ ...estimate, confidence })
+        const estimate = createUnavailableEstimate(frame, 'listening', micLevels, imu)
+        const raw = rememberRaw({ ...estimate, confidence })
+        return stabilize(raw)
       }
 
       const relativeAzimuthDeg = normalizeSignedDegrees(
         (Math.atan2(combinedX, combinedY) * 180) / Math.PI,
       )
+      const sideLabel = labelForSide(relativeAzimuthDeg)
+      if (!sideLabel) {
+        const estimate = createUnavailableEstimate(frame, 'listening', micLevels, imu)
+        const raw = rememberRaw({ ...estimate, confidence })
+        return stabilize(raw)
+      }
 
-      return remember({
+      const raw = rememberRaw({
         available: true,
-        label: labelForAzimuth(relativeAzimuthDeg),
+        label: sideLabel,
         relativeAzimuthDeg,
         confidence,
         reason: 'four-channel mic array',
@@ -193,16 +346,24 @@ export function createDirectionEstimator(
         micLevels,
         imu,
       })
+      return stabilize(raw)
     },
     getLatest() {
-      return latest
+      return latestStable ?? latestRaw
     },
     getRecentBest(frameIndex, lookbackFrames = 5) {
+      if (
+        latestStable &&
+        latestStable.frameIndex <= frameIndex &&
+        frameIndex - latestStable.frameIndex <= Math.max(lookbackFrames, holdFrames)
+      ) {
+        return latestStable
+      }
       const candidates = history.filter(
         estimate =>
           estimate.frameIndex <= frameIndex && frameIndex - estimate.frameIndex <= lookbackFrames,
       )
-      if (candidates.length === 0) return latest
+      if (candidates.length === 0) return latestStable ?? latestRaw
       return candidates.reduce((best, estimate) => {
         const bestScore = (best.available ? 1 : 0) + best.confidence
         const estimateScore = (estimate.available ? 1 : 0) + estimate.confidence
