@@ -15,7 +15,7 @@ import { bytesToBase64, encodeWav } from '../audio/wav-encoder'
 const GEMINI_MODEL = 'gemini-2.5-flash'
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 const REQUEST_TIMEOUT_MS = 5000
-const MIN_CALL_INTERVAL_MS = 2000   // throttle so a burst of spikes doesn't hammer the API
+const MIN_CALL_INTERVAL_MS = 1200   // throttle so a burst of spikes doesn't hammer the API
 
 export interface LlmClassification {
   className: SoundClass

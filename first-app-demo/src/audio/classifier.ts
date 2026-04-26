@@ -127,23 +127,33 @@ export function createClassifier(): Classifier {
     const midFrac = total > 0 ? (be.lowMid + be.mid) / total : 0
     const highFrac = total > 0 ? be.high / total : 0
 
+    // Heuristic rules — kept deliberately strict so we hand off to the LLM
+    // (which sees raw audio) rather than confidently mislabeling. When in
+    // doubt, return 'other' and let the LLM provide the real answer.
+
     // Bell / whistle / squeak: high centroid + high ZCR + high-band dominant
     if (centroid > 2500 && zcr > 0.12 && highFrac > 0.25) {
       return { className: 'bell', confidence: 0.7, source: 'heuristic', features: f }
     }
 
     // Footsteps: very low centroid, low-band dominant, brief transient
-    if (centroid < 500 && lowFrac > 0.45) {
+    if (centroid < 400 && lowFrac > 0.5) {
       return { className: 'footsteps', confidence: 0.6, source: 'heuristic', features: f }
     }
 
-    // Voice: mid centroid, mid bands dominant, moderate ZCR
-    if (centroid >= 400 && centroid < 2500 && midFrac > 0.5 && zcr > 0.02 && zcr < 0.18) {
+    // Voice: tighter than before — must have mid-band dominance, low-band
+    // suppressed (excludes claps/footsteps with broadband transients), and
+    // ZCR characteristic of mixed voiced/unvoiced speech.
+    if (
+      centroid >= 600 && centroid < 2200 &&
+      midFrac > 0.55 && lowFrac < 0.3 &&
+      zcr >= 0.04 && zcr < 0.16
+    ) {
       return { className: 'voice', confidence: 0.65, source: 'heuristic', features: f }
     }
 
     // Vehicle: low-mid centroid with broadband (no single band dominant)
-    if (centroid >= 200 && centroid < 1000 && lowFrac < 0.6 && highFrac < 0.2) {
+    if (centroid >= 200 && centroid < 1000 && lowFrac < 0.6 && highFrac < 0.2 && midFrac < 0.55) {
       return { className: 'vehicle', confidence: 0.5, source: 'heuristic', features: f }
     }
 

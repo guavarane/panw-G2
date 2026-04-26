@@ -80,9 +80,14 @@ async function main() {
         const audioForLlm = sampleBuffer.getRecent(1000)
         llmClassifier.classify(audioForLlm).then(llmResult => {
           if (!llmResult) return
-          // Only upgrade if we're still alerting on the same spike (state may have cleared).
+          // Apply to whatever alert is currently active. Previous design tried
+          // to match the original spike's frameIndex, but with rapid-fire
+          // events (claps, footsteps) every new spike would replace the alert
+          // and the LLM result would be discarded. Better to upgrade whatever
+          // alert is on screen — for repeated similar sounds the label is
+          // still correct.
           const currentState = fsm.current()
-          if (currentState.kind !== 'ALERTING' || currentState.spike.frameIndex !== spike.frameIndex) {
+          if (currentState.kind !== 'ALERTING') {
             console.log('[clearpath] LLM result arrived but alert already cleared — discarding')
             return
           }

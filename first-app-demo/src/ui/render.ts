@@ -37,19 +37,33 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
   // ALERTING
   const intensity = Math.min(1, state.spike.ratio / 8)
   const c = state.classification
-  // Prefer LLM's rich description if present; fall back to category label.
-  const headline = c?.description?.toUpperCase() ?? (c ? classLabel(c.className) : 'SOUND')
-  const confidenceTag = c && c.confidence < 0.5 ? ' (?)' : ''
-  const sourceTag = c?.source === 'llm' ? '[AI]' : c?.source === 'heuristic' ? '[~]' : ''
+
+  // Build the headline so the user can tell when we're guessing vs confident:
+  //  - LLM result   → bold, e.g. "BICYCLE BELL"  (with [AI] tag)
+  //  - Heuristic    → hedged, e.g. "SOUND (maybe footsteps?)"  (with [~] tag)
+  //  - Nothing yet  → plain "SOUND DETECTED..."
+  let headline: string
+  let sourceTag: string
+  if (c?.source === 'llm' && c.description) {
+    headline = c.description.toUpperCase()
+    sourceTag = '[AI]'
+  } else if (c?.source === 'heuristic' && c.className !== 'other') {
+    headline = `SOUND (maybe ${classLabel(c.className).toLowerCase()}?)`
+    sourceTag = '[~]'
+  } else {
+    headline = 'SOUND DETECTED...'
+    sourceTag = ''
+  }
+
   const urgencyMarker =
-    c?.urgency === 'high' ? '!!!'
-    : c?.urgency === 'medium' ? '!!'
-    : c?.urgency === 'low' ? '!'
+    c?.source === 'llm' && c.urgency === 'high' ? '!!!'
+    : c?.source === 'llm' && c.urgency === 'medium' ? '!!'
+    : c?.source === 'llm' && c.urgency === 'low' ? '!'
     : '***'
 
   if (state.approaching) {
     return (
-      `>>> ${headline} APPROACHING${confidenceTag} <<< ${sourceTag}\n` +
+      `>>> ${headline} APPROACHING <<< ${sourceTag}\n` +
       `\n` +
       `intensity: ${makeBar(intensity)}\n` +
       `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
@@ -59,7 +73,7 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
     )
   }
   return (
-    `${urgencyMarker} ${headline}${confidenceTag} ${urgencyMarker} ${sourceTag}\n` +
+    `${urgencyMarker} ${headline} ${urgencyMarker} ${sourceTag}\n` +
     `\n` +
     `intensity: ${makeBar(intensity)}\n` +
     `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
