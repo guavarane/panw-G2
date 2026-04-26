@@ -1,9 +1,11 @@
 import './styles.css'
 import {
+  ImuReportPace,
   OsEventTypeList,
   StartUpPageCreateResult,
   waitForEvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
+import { createDirectionEstimator } from './audio/direction'
 import { createAudioStream } from './audio/stream'
 import { createRmsTracker } from './audio/rms'
 import { createSpikeDetector } from './audio/spike-detector'
@@ -43,48 +45,95 @@ async function main() {
   })
   const fsm = createStateMachine()
   const renderer = new Renderer(bridge, 200)
-  const audio = createAudioStream(bridge)
+  const audio = createAudioStream(bridge, { channelCount: 4 })
+  const direction = createDirectionEstimator({ minConfidence: 0.1 })
+  let unsubscribeEvents: (() => void) | null = null
+  let loggedAudioShape = false
+  let stoppingSensors = false
 
-  audio.onFrame((samples, frameIndex) => {
-    rms.push(samples)
-    const spike = spikes.feed(rms.getCurrent(), rms.getBaseline(), frameIndex)
+  async function stopSensors() {
+    if (stoppingSensors) return
+    stoppingSensors = true
+    const unsubscribe = unsubscribeEvents
+    unsubscribeEvents = null
+    unsubscribe?.()
+    await Promise.allSettled([audio.stop(), bridge.imuControl(false)])
+  }
+
+  audio.onFrame(frame => {
+    rms.push(frame.samples)
+    const directionEstimate = direction.feed(frame)
+    const spike = spikes.feed(rms.getCurrent(), rms.getBaseline(), frame.frameIndex)
     if (spike) {
+      const localizedSpike = {
+        ...spike,
+        direction: direction.getRecentBest(spike.frameIndex) ?? directionEstimate,
+      }
       console.log(
-        `[clearpath] SPIKE frame=${spike.frameIndex} ratio=${spike.ratio.toFixed(2)} peak=${spike.peakRms.toFixed(4)} dur=${spike.durationMs}ms`,
+        `[clearpath] SPIKE frame=${spike.frameIndex} ratio=${spike.ratio.toFixed(2)} peak=${spike.peakRms.toFixed(4)} dur=${spike.durationMs}ms location=${localizedSpike.direction?.label ?? 'unknown'} confidence=${localizedSpike.direction?.confidence.toFixed(2) ?? '0.00'}`,
       )
-      fsm.alert(spike)
+      fsm.alert(localizedSpike)
     }
-    if (frameIndex % 50 === 0) {
+    if (frame.frameIndex % 50 === 0) {
       console.log(
-        `[clearpath] frame=${frameIndex} rms=${rms.getCurrent().toFixed(4)} baseline=${rms.getBaseline().toFixed(4)} state=${fsm.current().kind}`,
+        `[clearpath] frame=${frame.frameIndex} rms=${rms.getCurrent().toFixed(4)} baseline=${rms.getBaseline().toFixed(4)} channels=${frame.channelCount} state=${fsm.current().kind}`,
       )
     }
-    renderer.render(renderState(fsm.current(), rms.getCurrent(), rms.getBaseline()))
+    renderer.render(renderState(fsm.current(), rms.getCurrent(), rms.getBaseline(), direction.getLatest()))
   })
 
   fsm.onChange(state => {
     console.log(`[clearpath] state -> ${state.kind}`)
-    renderer.render(renderState(state, rms.getCurrent(), rms.getBaseline()), true)
+    renderer.render(renderState(state, rms.getCurrent(), rms.getBaseline(), direction.getLatest()), true)
   })
 
   // Periodic tick for ALERTING auto-clear (4s)
   setInterval(() => fsm.tick(Date.now()), 250)
 
-  await audio.start()
-  console.log('[clearpath] audio capture started')
-
-  // Double-tap to exit (works whether the event arrives via sysEvent or textEvent)
-  bridge.onEvenHubEvent(async event => {
-    const sysType = event.sysEvent?.eventType ?? null
+  // Double-tap to exit; IMU samples are used as head-pose context for sound direction.
+  unsubscribeEvents = bridge.onEvenHubEvent(async event => {
+    const sys = event.sysEvent
+    const sysType = sys?.eventType ?? null
     const textType = event.textEvent?.eventType ?? null
+
+    if (event.audioEvent && !loggedAudioShape) {
+      loggedAudioShape = true
+      const keys = event.jsonData ? Object.keys(event.jsonData).join(',') : 'none'
+      console.log(
+        `[clearpath] audio payload bytes=${event.audioEvent.audioPcm.byteLength} rawKeys=${keys}`,
+      )
+    }
+
+    if (sys?.imuData && sysType === OsEventTypeList.IMU_DATA_REPORT) {
+      direction.updateImu(sys.imuData)
+      return
+    }
+
+    if (
+      sysType === OsEventTypeList.ABNORMAL_EXIT_EVENT ||
+      sysType === OsEventTypeList.SYSTEM_EXIT_EVENT
+    ) {
+      await stopSensors()
+      return
+    }
+
     if (
       sysType === OsEventTypeList.DOUBLE_CLICK_EVENT ||
       textType === OsEventTypeList.DOUBLE_CLICK_EVENT
     ) {
-      await audio.stop()
-      bridge.shutDownPageContainer(1)
+      await stopSensors()
+      await bridge.shutDownPageContainer(1)
     }
   })
+
+  window.addEventListener('beforeunload', () => {
+    void stopSensors()
+  })
+
+  const imuStarted = await bridge.imuControl(true, ImuReportPace.P500)
+  if (!imuStarted) console.warn('[clearpath] IMU capture failed to start')
+  await audio.start()
+  console.log('[clearpath] audio capture started')
 }
 
 main().catch(err => {
