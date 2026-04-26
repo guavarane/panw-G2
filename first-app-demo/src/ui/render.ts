@@ -1,6 +1,7 @@
 import { TextContainerUpgrade } from '@evenrealities/even_hub_sdk'
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import type { AppState } from '../state/machine'
+import type { SoundClass } from '../audio/classifier'
 import { MAIN_CONTAINER_ID, MAIN_CONTAINER_NAME } from './containers'
 
 const BAR_WIDTH = 24
@@ -8,6 +9,18 @@ const BAR_WIDTH = 24
 function makeBar(value: number, scale = 1): string {
   const fill = Math.max(0, Math.min(BAR_WIDTH, Math.round(value * BAR_WIDTH * scale)))
   return '#'.repeat(fill) + '-'.repeat(BAR_WIDTH - fill)
+}
+
+// Display label for each sound class. 'other' falls back to the generic label
+// so we don't lie about a confident classification when we don't have one.
+function classLabel(c: SoundClass): string {
+  switch (c) {
+    case 'voice': return 'VOICE'
+    case 'footsteps': return 'FOOTSTEPS'
+    case 'vehicle': return 'VEHICLE'
+    case 'bell': return 'BELL/WHISTLE'
+    case 'other': return 'SOUND'
+  }
 }
 
 export function renderState(state: AppState, currentRms: number, baselineRms: number): string {
@@ -23,9 +36,13 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
   }
   // ALERTING
   const intensity = Math.min(1, state.spike.ratio / 8)
+  const label = state.classification ? classLabel(state.classification.className) : 'SOUND'
+  const confidence = state.classification?.confidence ?? 0
+  const confidenceTag = state.classification && confidence < 0.5 ? ' (?)' : ''
+
   if (state.approaching) {
     return (
-      `>>> APPROACHING <<<\n` +
+      `>>> ${label} APPROACHING${confidenceTag} <<<\n` +
       `\n` +
       `intensity: ${makeBar(intensity)}\n` +
       `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
@@ -35,7 +52,7 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
     )
   }
   return (
-    `*** SOUND DETECTED ***\n` +
+    `*** ${label} DETECTED${confidenceTag} ***\n` +
     `\n` +
     `intensity: ${makeBar(intensity)}\n` +
     `peak:      ${state.spike.peakRms.toFixed(3)}\n` +

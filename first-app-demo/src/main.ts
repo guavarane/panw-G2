@@ -8,6 +8,8 @@ import { createAudioStream } from './audio/stream'
 import { createRmsTracker } from './audio/rms'
 import { createSpikeDetector } from './audio/spike-detector'
 import { createApproachDetector } from './audio/approach-detector'
+import { createSampleBuffer } from './audio/buffer'
+import { createClassifier } from './audio/classifier'
 import { buildStartupPage } from './ui/containers'
 import { Renderer, renderState } from './ui/render'
 import { createStateMachine } from './state/machine'
@@ -43,18 +45,31 @@ async function main() {
     cooldownMs: 1000,
   })
   const approach = createApproachDetector()
+  const sampleBuffer = createSampleBuffer(800)   // keep last 800 ms for classification
+  const classifier = createClassifier()
   const fsm = createStateMachine()
   const renderer = new Renderer(bridge, 200)
   const audio = createAudioStream(bridge)
 
   audio.onFrame((samples, frameIndex) => {
     rms.push(samples)
+    sampleBuffer.push(samples)
     const spike = spikes.feed(rms.getCurrent(), rms.getBaseline(), frameIndex)
     if (spike) {
+      const classification = classifier.classify(sampleBuffer.getRecent(500))
       console.log(
         `[clearpath] SPIKE frame=${spike.frameIndex} ratio=${spike.ratio.toFixed(2)} peak=${spike.peakRms.toFixed(4)} dur=${spike.durationMs}ms`,
       )
-      fsm.alert(spike)
+      console.log(
+        `[clearpath] CLASS  ${classification.className} (conf=${classification.confidence.toFixed(2)}) ` +
+        `centroid=${classification.features.spectralCentroidHz.toFixed(0)}Hz ` +
+        `zcr=${classification.features.zeroCrossingRate.toFixed(3)} ` +
+        `bands={lo=${classification.features.bandEnergies.low.toFixed(1)}, ` +
+        `loMid=${classification.features.bandEnergies.lowMid.toFixed(1)}, ` +
+        `mid=${classification.features.bandEnergies.mid.toFixed(1)}, ` +
+        `hi=${classification.features.bandEnergies.high.toFixed(1)}}`
+      )
+      fsm.alert(spike, classification)
       approach.startWatch(spike.peakRms, frameIndex)
     }
     const verdict = approach.feed(rms.getCurrent(), frameIndex)

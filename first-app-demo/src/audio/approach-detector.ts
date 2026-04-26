@@ -9,7 +9,7 @@
 // enough to avoid false positives from a single late-window noise.
 
 const FRAME_INTERVAL_MS = 100
-const WATCH_DURATION_MS = 2000
+const WATCH_DURATION_MS = 1000
 const APPROACH_GROWTH_RATIO = 1.2
 
 export interface ApproachVerdict {
