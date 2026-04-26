@@ -23,6 +23,17 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
   }
   // ALERTING
   const intensity = Math.min(1, state.spike.ratio / 8)
+  if (state.approaching) {
+    return (
+      `>>> APPROACHING <<<\n` +
+      `\n` +
+      `intensity: ${makeBar(intensity)}\n` +
+      `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
+      `ratio:     ${state.spike.ratio.toFixed(1)}x baseline\n` +
+      `\n` +
+      `getting louder`
+    )
+  }
   return (
     `*** SOUND DETECTED ***\n` +
     `\n` +

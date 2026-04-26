@@ -7,6 +7,7 @@ import {
 import { createAudioStream } from './audio/stream'
 import { createRmsTracker } from './audio/rms'
 import { createSpikeDetector } from './audio/spike-detector'
+import { createApproachDetector } from './audio/approach-detector'
 import { buildStartupPage } from './ui/containers'
 import { Renderer, renderState } from './ui/render'
 import { createStateMachine } from './state/machine'
@@ -41,6 +42,7 @@ async function main() {
     minDurationMs: 150,
     cooldownMs: 1000,
   })
+  const approach = createApproachDetector()
   const fsm = createStateMachine()
   const renderer = new Renderer(bridge, 200)
   const audio = createAudioStream(bridge)
@@ -53,6 +55,14 @@ async function main() {
         `[clearpath] SPIKE frame=${spike.frameIndex} ratio=${spike.ratio.toFixed(2)} peak=${spike.peakRms.toFixed(4)} dur=${spike.durationMs}ms`,
       )
       fsm.alert(spike)
+      approach.startWatch(spike.peakRms, frameIndex)
+    }
+    const verdict = approach.feed(rms.getCurrent(), frameIndex)
+    if (verdict) {
+      console.log(
+        `[clearpath] APPROACH verdict approaching=${verdict.approaching} growth=${verdict.growth.toFixed(2)}x (spike=${verdict.spikePeakRms.toFixed(4)} watch=${verdict.watchPeakRms.toFixed(4)})`,
+      )
+      if (verdict.approaching) fsm.upgradeToApproaching()
     }
     if (frameIndex % 50 === 0) {
       console.log(
