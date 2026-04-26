@@ -10,6 +10,11 @@
     {
       "name": "g2-microphone",
       "desc": "Listen for nearby sounds (people, vehicles, bicycles) to provide spatial-awareness alerts for deaf and hard-of-hearing wearers."
+    },
+    {
+      "name": "network",
+      "desc": "Send short audio clips to Gemini for richer sound classification (e.g. 'bicycle bell' vs generic 'sound').",
+      "whitelist": ["generativelanguage.googleapis.com"]
     }
   ],
   "supported_languages": ["en"]

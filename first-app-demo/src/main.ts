@@ -10,6 +10,7 @@ import { createSpikeDetector } from './audio/spike-detector'
 import { createApproachDetector } from './audio/approach-detector'
 import { createSampleBuffer } from './audio/buffer'
 import { createClassifier } from './audio/classifier'
+import { createLlmClassifier } from './llm/gemini-classifier'
 import { buildStartupPage } from './ui/containers'
 import { Renderer, renderState } from './ui/render'
 import { createStateMachine } from './state/machine'
@@ -45,8 +46,10 @@ async function main() {
     cooldownMs: 1000,
   })
   const approach = createApproachDetector()
-  const sampleBuffer = createSampleBuffer(800)   // keep last 800 ms for classification
+  const sampleBuffer = createSampleBuffer(1200)   // keep last 1.2 s for heuristic + LLM classification
   const classifier = createClassifier()
+  const llmClassifier = createLlmClassifier(import.meta.env.VITE_GEMINI_API_KEY)
+  console.log(`[clearpath] LLM classifier ${llmClassifier.isAvailable() ? 'enabled' : 'disabled (no VITE_GEMINI_API_KEY)'}`)
   const fsm = createStateMachine()
   const renderer = new Renderer(bridge, 200)
   const audio = createAudioStream(bridge)
@@ -61,16 +64,38 @@ async function main() {
         `[clearpath] SPIKE frame=${spike.frameIndex} ratio=${spike.ratio.toFixed(2)} peak=${spike.peakRms.toFixed(4)} dur=${spike.durationMs}ms`,
       )
       console.log(
-        `[clearpath] CLASS  ${classification.className} (conf=${classification.confidence.toFixed(2)}) ` +
-        `centroid=${classification.features.spectralCentroidHz.toFixed(0)}Hz ` +
-        `zcr=${classification.features.zeroCrossingRate.toFixed(3)} ` +
-        `bands={lo=${classification.features.bandEnergies.low.toFixed(1)}, ` +
-        `loMid=${classification.features.bandEnergies.lowMid.toFixed(1)}, ` +
-        `mid=${classification.features.bandEnergies.mid.toFixed(1)}, ` +
-        `hi=${classification.features.bandEnergies.high.toFixed(1)}}`
+        `[clearpath] CLASS[heuristic] ${classification.className} (conf=${classification.confidence.toFixed(2)}) ` +
+        `centroid=${classification.features?.spectralCentroidHz.toFixed(0)}Hz ` +
+        `zcr=${classification.features?.zeroCrossingRate.toFixed(3)}`
       )
       fsm.alert(spike, classification)
       approach.startWatch(spike.peakRms, frameIndex)
+
+      // Fire-and-forget LLM classification — upgrades the alert label when it returns.
+      // Captures a wider 1 s window for richer context.
+      if (llmClassifier.isAvailable()) {
+        const audioForLlm = sampleBuffer.getRecent(1000)
+        llmClassifier.classify(audioForLlm).then(llmResult => {
+          if (!llmResult) return
+          // Only upgrade if we're still alerting on the same spike (state may have cleared).
+          const currentState = fsm.current()
+          if (currentState.kind !== 'ALERTING' || currentState.spike.frameIndex !== spike.frameIndex) {
+            console.log('[clearpath] LLM result arrived but alert already cleared — discarding')
+            return
+          }
+          console.log(
+            `[clearpath] CLASS[llm] ${llmResult.className} "${llmResult.description}" ` +
+            `conf=${llmResult.confidence.toFixed(2)} urgency=${llmResult.urgency}`
+          )
+          fsm.attachClassification({
+            className: llmResult.className,
+            confidence: llmResult.confidence,
+            source: 'llm',
+            description: llmResult.description,
+            urgency: llmResult.urgency,
+          })
+        }).catch(err => console.warn('[clearpath] LLM classify failed:', err))
+      }
     }
     const verdict = approach.feed(rms.getCurrent(), frameIndex)
     if (verdict) {

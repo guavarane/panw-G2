@@ -36,13 +36,20 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
   }
   // ALERTING
   const intensity = Math.min(1, state.spike.ratio / 8)
-  const label = state.classification ? classLabel(state.classification.className) : 'SOUND'
-  const confidence = state.classification?.confidence ?? 0
-  const confidenceTag = state.classification && confidence < 0.5 ? ' (?)' : ''
+  const c = state.classification
+  // Prefer LLM's rich description if present; fall back to category label.
+  const headline = c?.description?.toUpperCase() ?? (c ? classLabel(c.className) : 'SOUND')
+  const confidenceTag = c && c.confidence < 0.5 ? ' (?)' : ''
+  const sourceTag = c?.source === 'llm' ? '[AI]' : c?.source === 'heuristic' ? '[~]' : ''
+  const urgencyMarker =
+    c?.urgency === 'high' ? '!!!'
+    : c?.urgency === 'medium' ? '!!'
+    : c?.urgency === 'low' ? '!'
+    : '***'
 
   if (state.approaching) {
     return (
-      `>>> ${label} APPROACHING${confidenceTag} <<<\n` +
+      `>>> ${headline} APPROACHING${confidenceTag} <<< ${sourceTag}\n` +
       `\n` +
       `intensity: ${makeBar(intensity)}\n` +
       `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
@@ -52,7 +59,7 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
     )
   }
   return (
-    `*** ${label} DETECTED${confidenceTag} ***\n` +
+    `${urgencyMarker} ${headline}${confidenceTag} ${urgencyMarker} ${sourceTag}\n` +
     `\n` +
     `intensity: ${makeBar(intensity)}\n` +
     `peak:      ${state.spike.peakRms.toFixed(3)}\n` +

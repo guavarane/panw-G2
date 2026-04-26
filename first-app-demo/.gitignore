@@ -2,4 +2,7 @@ node_modules/
 dist/
 *.log
 *.ehpk
+.env
+.env.local
+.env.*.local
 

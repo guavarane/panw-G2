@@ -31,8 +31,11 @@ export interface ClassifierFeatures {
 
 export interface Classification {
   className: SoundClass
-  confidence: number   // 0-1, rough self-rating
-  features: ClassifierFeatures
+  confidence: number              // 0-1, rough self-rating
+  source: 'heuristic' | 'llm'     // which classifier produced this
+  features?: ClassifierFeatures   // present for heuristic
+  description?: string            // present for LLM — short rich label
+  urgency?: 'low' | 'medium' | 'high'  // present for LLM
 }
 
 export interface Classifier {
@@ -126,25 +129,25 @@ export function createClassifier(): Classifier {
 
     // Bell / whistle / squeak: high centroid + high ZCR + high-band dominant
     if (centroid > 2500 && zcr > 0.12 && highFrac > 0.25) {
-      return { className: 'bell', confidence: 0.7, features: f }
+      return { className: 'bell', confidence: 0.7, source: 'heuristic', features: f }
     }
 
     // Footsteps: very low centroid, low-band dominant, brief transient
     if (centroid < 500 && lowFrac > 0.45) {
-      return { className: 'footsteps', confidence: 0.6, features: f }
+      return { className: 'footsteps', confidence: 0.6, source: 'heuristic', features: f }
     }
 
     // Voice: mid centroid, mid bands dominant, moderate ZCR
     if (centroid >= 400 && centroid < 2500 && midFrac > 0.5 && zcr > 0.02 && zcr < 0.18) {
-      return { className: 'voice', confidence: 0.65, features: f }
+      return { className: 'voice', confidence: 0.65, source: 'heuristic', features: f }
     }
 
     // Vehicle: low-mid centroid with broadband (no single band dominant)
     if (centroid >= 200 && centroid < 1000 && lowFrac < 0.6 && highFrac < 0.2) {
-      return { className: 'vehicle', confidence: 0.5, features: f }
+      return { className: 'vehicle', confidence: 0.5, source: 'heuristic', features: f }
     }
 
-    return { className: 'other', confidence: 0.3, features: f }
+    return { className: 'other', confidence: 0.3, source: 'heuristic', features: f }
   }
 
   return {
