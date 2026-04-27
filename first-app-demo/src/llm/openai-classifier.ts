@@ -19,9 +19,9 @@ const REQUEST_TIMEOUT_MS = 8000
 const MIN_CALL_INTERVAL_MS = 1500
 
 export interface OpenaiClassification {
-  type: 'speech' | 'siren' | 'car_horn' | 'bicycle_bell' | 'vehicle' | 'footsteps' | 'animal' | 'impact' | 'other_sound'
+  type: 'speech' | 'whistle_bell' | 'other'
   transcript?: string      // only present when type === 'speech'
-  description?: string     // human label for non-speech (e.g. "ambulance siren")
+  description?: string     // human label for non-speech (e.g. "ambulance siren", "hand clap")
   urgency: 'low' | 'medium' | 'high'
   confidence: number
 }
@@ -35,34 +35,37 @@ const SYSTEM_PROMPT = `You are an audio analyzer for accessibility software help
 
 Listen to the attached audio clip and respond with JSON only — no commentary, no markdown.
 
-DECISION RULE:
-- If the audio contains clear human speech in any language: type = "speech", and put the exact words in "transcript"
-- Otherwise: pick the closest type for the dominant sound, and put a short human label in "description"
+THREE CATEGORIES:
+- "speech": clear human speech in any language → transcribe the exact words
+- "whistle_bell": tonal attention-getting alerts — bicycle bells, doorbells, smoke alarms, sirens, car horns, whistles, phone ringtones
+- "other": anything else (footsteps, claps, dogs barking, vehicles, ambient noise, etc.) — give a short label
 
 Output schema:
 {
-  "type": "speech" | "siren" | "car_horn" | "bicycle_bell" | "vehicle" | "footsteps" | "animal" | "impact" | "other_sound",
-  "transcript": "<exact words said>"  (REQUIRED if type is speech, otherwise omit),
-  "description": "<3-30 char label>" (REQUIRED if type is NOT speech, otherwise omit),
+  "type": "speech" | "whistle_bell" | "other",
+  "transcript": "<exact words said>"   (REQUIRED if type is speech, otherwise omit),
+  "description": "<3-30 char label>"   (REQUIRED if type is NOT speech, otherwise omit),
   "urgency": "low" | "medium" | "high",
   "confidence": <number 0 to 1>
 }
 
-URGENCY GUIDE (this matters for deaf user safety):
-- "high"   : sirens, alarms, car horns, screaming, glass breaking, anything signaling immediate safety
-- "medium" : approaching vehicles, footsteps very close, persistent animal sounds, doorbells
-- "low"    : casual speech, distant sounds, background ambience
+URGENCY GUIDE (matters for deaf user safety):
+- "high":   sirens, alarms, car horns, screaming, glass breaking, anything signaling immediate safety
+- "medium": doorbells, bicycle bells nearby, footsteps very close, persistent loud sounds
+- "low":    casual speech, distant sounds, background ambience
 
 EXAMPLES:
 {"type":"speech","transcript":"excuse me","urgency":"low","confidence":0.95}
-{"type":"siren","description":"ambulance siren","urgency":"high","confidence":0.92}
-{"type":"car_horn","description":"car horn honking","urgency":"high","confidence":0.88}
-{"type":"bicycle_bell","description":"bicycle bell","urgency":"medium","confidence":0.85}
-{"type":"footsteps","description":"footsteps approaching","urgency":"medium","confidence":0.7}
-{"type":"animal","description":"dog barking","urgency":"medium","confidence":0.8}
-{"type":"other_sound","description":"hand clap","urgency":"low","confidence":0.6}
+{"type":"speech","transcript":"watch out","urgency":"high","confidence":0.93}
+{"type":"whistle_bell","description":"ambulance siren","urgency":"high","confidence":0.92}
+{"type":"whistle_bell","description":"car horn","urgency":"high","confidence":0.88}
+{"type":"whistle_bell","description":"bicycle bell","urgency":"medium","confidence":0.85}
+{"type":"whistle_bell","description":"smoke alarm","urgency":"high","confidence":0.9}
+{"type":"other","description":"footsteps approaching","urgency":"medium","confidence":0.7}
+{"type":"other","description":"dog barking","urgency":"medium","confidence":0.8}
+{"type":"other","description":"hand clap","urgency":"low","confidence":0.6}
 
-If unsure, set confidence below 0.5 and use type "other_sound".`
+If unsure, set confidence below 0.5 and use type "other".`
 
 interface OpenaiResponse {
   choices?: Array<{ message?: { content?: string } }>
@@ -160,13 +163,10 @@ function parseClassification(text: string): OpenaiClassification | null {
   if (!parsed || typeof parsed !== 'object') return null
 
   const obj = parsed as Record<string, unknown>
-  const validTypes: OpenaiClassification['type'][] = [
-    'speech', 'siren', 'car_horn', 'bicycle_bell', 'vehicle', 'footsteps',
-    'animal', 'impact', 'other_sound',
-  ]
+  const validTypes: OpenaiClassification['type'][] = ['speech', 'whistle_bell', 'other']
   const type = validTypes.includes(obj.type as OpenaiClassification['type'])
     ? (obj.type as OpenaiClassification['type'])
-    : 'other_sound'
+    : 'other'
 
   const validUrgencies = ['low', 'medium', 'high'] as const
   type Urgency = typeof validUrgencies[number]
@@ -188,21 +188,12 @@ function parseClassification(text: string): OpenaiClassification | null {
   }
 }
 
-// Maps the OpenAI-specific type taxonomy onto the project's existing
-// SoundClass enum. We keep both because SoundClass is what the heuristic
-// uses and what the rest of the code expects; the OpenAI type is richer.
+// Maps OpenAI's type taxonomy onto the project's SoundClass enum.
+// One-to-one mapping now that both use the same three-category set.
 export function openaiTypeToSoundClass(type: OpenaiClassification['type']): SoundClass {
   switch (type) {
     case 'speech': return 'voice'
-    case 'footsteps': return 'footsteps'
-    case 'vehicle':
-    case 'car_horn': return 'vehicle'
-    case 'siren':
-    case 'bicycle_bell': return 'bell'
-    case 'animal':
-    case 'impact':
-    case 'other_sound':
-    default:
-      return 'other'
+    case 'whistle_bell': return 'bell'
+    case 'other': return 'other'
   }
 }

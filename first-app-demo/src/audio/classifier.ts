@@ -19,7 +19,12 @@ const SAMPLE_RATE = 16000
 const FFT_SIZE = 2048   // ~128 ms window at 16 kHz; balance of resolution vs cost
 const NYQUIST = SAMPLE_RATE / 2
 
-export type SoundClass = 'voice' | 'footsteps' | 'vehicle' | 'bell' | 'other'
+// Demo-focused taxonomy: only the three categories where we get reliable
+// classifications. Voice is high-value (we transcribe it). Whistle/bell
+// covers attention-getting tonal alerts (bicycle bell, doorbell, alarm,
+// siren, car horn). Everything else falls into 'other' rather than risking
+// a confidently-wrong specific label.
+export type SoundClass = 'voice' | 'bell' | 'other'
 
 export interface ClassifierFeatures {
   spectralCentroidHz: number
@@ -128,22 +133,16 @@ export function createClassifier(): Classifier {
     const midFrac = total > 0 ? (be.lowMid + be.mid) / total : 0
     const highFrac = total > 0 ? be.high / total : 0
 
-    // Heuristic rules — kept deliberately strict so we hand off to the LLM
-    // (which sees raw audio) rather than confidently mislabeling. When in
-    // doubt, return 'other' and let the LLM provide the real answer.
+    // Heuristic rules — only emit the two categories we can detect with
+    // reasonable confidence. Everything else returns 'other' so the LLM
+    // (which sees raw audio) can provide the real answer.
 
-    // Bell / whistle / squeak: high centroid + high ZCR + high-band dominant
+    // Whistle / bell / alarm: high centroid + high ZCR + high-band dominant
     if (centroid > 2500 && zcr > 0.12 && highFrac > 0.25) {
       return { className: 'bell', confidence: 0.7, source: 'heuristic', features: f }
     }
 
-    // Footsteps: very low centroid, low-band dominant, brief transient
-    if (centroid < 400 && lowFrac > 0.5) {
-      return { className: 'footsteps', confidence: 0.6, source: 'heuristic', features: f }
-    }
-
-    // Voice: tighter than before — must have mid-band dominance, low-band
-    // suppressed (excludes claps/footsteps with broadband transients), and
+    // Voice: mid-band dominance, low-band suppressed (excludes claps),
     // ZCR characteristic of mixed voiced/unvoiced speech.
     if (
       centroid >= 600 && centroid < 2200 &&
@@ -151,11 +150,6 @@ export function createClassifier(): Classifier {
       zcr >= 0.04 && zcr < 0.16
     ) {
       return { className: 'voice', confidence: 0.65, source: 'heuristic', features: f }
-    }
-
-    // Vehicle: low-mid centroid with broadband (no single band dominant)
-    if (centroid >= 200 && centroid < 1000 && lowFrac < 0.6 && highFrac < 0.2 && midFrac < 0.55) {
-      return { className: 'vehicle', confidence: 0.5, source: 'heuristic', features: f }
     }
 
     return { className: 'other', confidence: 0.3, source: 'heuristic', features: f }

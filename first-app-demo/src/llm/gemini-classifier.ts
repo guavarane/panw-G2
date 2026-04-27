@@ -33,16 +33,19 @@ const SYSTEM_PROMPT = `You are an environmental audio classifier for accessibili
 
 Identify the dominant sound in the attached audio clip and respond with JSON only.
 
+Three categories:
+- "voice": any human speech
+- "bell": tonal attention-getting alerts — whistles, bicycle bells, doorbells, smoke alarms, sirens, car horns, phone ringtones
+- "other": everything else (footsteps, claps, animals, vehicles, ambient noise)
+
 Rules:
-- "category" must be one of: voice, footsteps, vehicle, bell, other
-- "description" is a 3-30 character human label (e.g. "footsteps approaching", "bicycle bell", "car horn", "dog barking")
-- "urgency" reflects how quickly the user should react: low (background noise), medium (someone nearby), high (immediate safety like a vehicle)
-- If unsure, set confidence below 0.5 and use a generic description
+- "description" is a 3-30 character human label (e.g. "bicycle bell", "car horn", "dog barking", "person speaking")
+- "urgency": high = immediate safety (sirens, horns, screaming); medium = doorbells, footsteps nearby; low = casual / distant
 - Be terse — no markdown, no extra text
 
 Output schema:
 {
-  "category": "voice" | "footsteps" | "vehicle" | "bell" | "other",
+  "category": "voice" | "bell" | "other",
   "description": "<3-30 chars>",
   "confidence": <number 0-1>,
   "urgency": "low" | "medium" | "high"
@@ -149,10 +152,13 @@ function parseClassification(text: string): LlmClassification | null {
   const confidence = obj.confidence
   const urgency = obj.urgency
 
-  const validClasses: SoundClass[] = ['voice', 'footsteps', 'vehicle', 'bell', 'other']
-  const className: SoundClass = validClasses.includes(category as SoundClass)
-    ? (category as SoundClass)
-    : 'other'
+  // Gemini's prompt asks for the 3 categories, but it sometimes returns
+  // older labels — coerce them to one of the 3.
+  const incoming = String(category ?? '').toLowerCase()
+  const className: SoundClass =
+    incoming === 'speech' || incoming === 'voice' ? 'voice' :
+    incoming === 'whistle_bell' || incoming === 'bell' || incoming === 'whistle' || incoming === 'siren' || incoming === 'alarm' || incoming === 'horn' ? 'bell' :
+    'other'
 
   const validUrgencies = ['low', 'medium', 'high'] as const
   type Urgency = typeof validUrgencies[number]

@@ -11,14 +11,13 @@ function makeBar(value: number, scale = 1): string {
   return '#'.repeat(fill) + '-'.repeat(BAR_WIDTH - fill)
 }
 
-// Display label for each sound class. 'other' falls back to the generic label
-// so we don't lie about a confident classification when we don't have one.
+// Display label for each sound class. 'other' falls back to the generic
+// label so we don't lie about a confident classification when we don't
+// have one.
 function classLabel(c: SoundClass): string {
   switch (c) {
     case 'voice': return 'VOICE'
-    case 'footsteps': return 'FOOTSTEPS'
-    case 'vehicle': return 'VEHICLE'
-    case 'bell': return 'BELL/WHISTLE'
+    case 'bell': return 'WHISTLE/BELL'
     case 'other': return 'SOUND'
   }
 }
