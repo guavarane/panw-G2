@@ -9,6 +9,11 @@ import { createDirectionEstimator } from './audio/direction'
 import { createAudioStream } from './audio/stream'
 import { createRmsTracker } from './audio/rms'
 import { createSpikeDetector } from './audio/spike-detector'
+import { createApproachDetector } from './audio/approach-detector'
+import { createSampleBuffer } from './audio/buffer'
+import { createClassifier, type Classification } from './audio/classifier'
+import { createOpenaiClassifier, openaiTypeToSoundClass } from './llm/openai-classifier'
+import { createLlmClassifier } from './llm/gemini-classifier'
 import { buildStartupPage } from './ui/containers'
 import { RadarRenderer, radarSignalFromState } from './ui/render'
 import { createStateMachine } from './state/machine'
@@ -53,11 +58,29 @@ async function main() {
   setText(detailEl, 'ClearPath listening — display is on glasses simulator/hardware.')
 
   const rms = createRmsTracker({ baselineHalfLifeSeconds: 10 })
+  // Tuned to catch short transients like footsteps (which were missed at 2.5x/150ms).
+  // 1.8x for one full frame (100 ms) is loose enough for a single footstep impact
+  // but strict enough to avoid triggering on breathing or keyboard typing.
+  // Henry's glasses-tested values (1.6x / 1000 ms cooldown) — slightly more
+  // sensitive than the laptop-sim tuning (1.8x / 800 ms) because the G2's
+  // chassis-mounted mic is farther from sounds than a laptop deck mic.
   const spikes = createSpikeDetector({
     ratioThreshold: 1.6,
     minDurationMs: 100,
     cooldownMs: 1000,
   })
+  const approach = createApproachDetector()
+  // Keep 4 s of audio so a delayed LLM call can grab a 2.5 s window AFTER
+  // the spike fires (lets full phrases like "excuse me, I'm on your left"
+  // finish before we send to the model).
+  const sampleBuffer = createSampleBuffer(4000)
+  const classifier = createClassifier()
+  // OpenAI is preferred (handles speech transcription + sound classification in one call).
+  // Gemini is the fallback if OpenAI key is missing — same role but classification-only.
+  const openaiClassifier = createOpenaiClassifier(import.meta.env.VITE_OPENAI_API_KEY)
+  const geminiClassifier = createLlmClassifier(import.meta.env.VITE_GEMINI_API_KEY)
+  const llmActive = openaiClassifier.isAvailable() ? 'OpenAI' : geminiClassifier.isAvailable() ? 'Gemini (fallback)' : 'none (heuristic only)'
+  console.log(`[clearpath] LLM classifier: ${llmActive}`)
   const fsm = createStateMachine()
   const renderer = new RadarRenderer(bridge, 250)
   const audio = createAudioStream(bridge, { channelCount: 4 })
@@ -85,6 +108,7 @@ async function main() {
 
   audio.onFrame(frame => {
     rms.push(frame.samples)
+    sampleBuffer.push(frame.samples)
     const directionEstimate = direction.feed(frame)
     const spike = spikes.feed(rms.getCurrent(), rms.getBaseline(), frame.frameIndex)
     if (spike) {
@@ -92,10 +116,87 @@ async function main() {
         ...spike,
         direction: direction.getRecentBest(spike.frameIndex) ?? directionEstimate,
       }
+      const classification = classifier.classify(sampleBuffer.getRecent(500))
       console.log(
         `[clearpath] SPIKE frame=${spike.frameIndex} ratio=${spike.ratio.toFixed(2)} peak=${spike.peakRms.toFixed(4)} dur=${spike.durationMs}ms location=${localizedSpike.direction?.label ?? 'unknown'} confidence=${localizedSpike.direction?.confidence.toFixed(2) ?? '0.00'}`,
       )
-      fsm.alert(localizedSpike)
+      console.log(
+        `[clearpath] CLASS[heuristic] ${classification.className} (conf=${classification.confidence.toFixed(2)}) ` +
+        `centroid=${classification.features?.spectralCentroidHz.toFixed(0)}Hz ` +
+        `zcr=${classification.features?.zeroCrossingRate.toFixed(3)}`
+      )
+      fsm.alert(localizedSpike, classification)
+      approach.startWatch(spike.peakRms, frame.frameIndex)
+
+      // Fire-and-forget LLM classification — upgrades the alert label when it returns.
+      // We wait ~1.5 s after the spike to let the user finish speaking the
+      // sentence (e.g. "excuse me, I'm on your left" takes ~2.2 s); then we
+      // grab the trailing 2.5 s of audio so the model gets the full phrase
+      // including ~1 s of pre-spike context.
+      // OpenAI handles both speech transcription and sound classification in one call.
+      // Gemini fallback is classification-only.
+      const SPIKE_TO_LLM_DELAY_MS = 1500
+      const LLM_AUDIO_WINDOW_MS = 2500
+      const startLlm = (): Promise<Classification | null> => {
+        const audioForLlm = sampleBuffer.getRecent(LLM_AUDIO_WINDOW_MS)
+        return openaiClassifier.isAvailable()
+        ? openaiClassifier.classify(audioForLlm).then(result => {
+            if (!result) return null
+            const classification: Classification = {
+              className: openaiTypeToSoundClass(result.type),
+              confidence: result.confidence,
+              source: 'llm',
+              description: result.description,
+              transcript: result.transcript,
+              urgency: result.urgency,
+            }
+            console.log(
+              `[clearpath] CLASS[openai] type=${result.type} ` +
+              (result.transcript ? `transcript="${result.transcript}" ` : `description="${result.description}" `) +
+              `urgency=${result.urgency} conf=${result.confidence.toFixed(2)}`
+            )
+            return classification
+          })
+        : geminiClassifier.isAvailable()
+        ? geminiClassifier.classify(audioForLlm).then(result => {
+            if (!result) return null
+            console.log(
+              `[clearpath] CLASS[gemini] ${result.className} "${result.description}" ` +
+              `conf=${result.confidence.toFixed(2)} urgency=${result.urgency}`
+            )
+            return {
+              className: result.className,
+              confidence: result.confidence,
+              source: 'llm',
+              description: result.description,
+              urgency: result.urgency,
+            } as Classification
+          })
+        : Promise.resolve(null)
+      }
+
+      setTimeout(() => {
+        startLlm().then(classification => {
+          if (!classification) return
+          // Apply to whatever alert is currently active. With rapid-fire events
+          // (claps, footsteps) every new spike replaces the alert; we still
+          // want the LLM upgrade to land on the active alert since adjacent
+          // spikes are usually the same sound.
+          const currentState = fsm.current()
+          if (currentState.kind !== 'ALERTING') {
+            console.log('[clearpath] LLM result arrived but alert already cleared — discarding')
+            return
+          }
+          fsm.attachClassification(classification)
+        }).catch(err => console.warn('[clearpath] LLM classify failed:', err))
+      }, SPIKE_TO_LLM_DELAY_MS)
+    }
+    const verdict = approach.feed(rms.getCurrent(), frame.frameIndex)
+    if (verdict) {
+      console.log(
+        `[clearpath] APPROACH verdict approaching=${verdict.approaching} growth=${verdict.growth.toFixed(2)}x (spike=${verdict.spikePeakRms.toFixed(4)} watch=${verdict.watchPeakRms.toFixed(4)})`,
+      )
+      if (verdict.approaching) fsm.upgradeToApproaching()
     }
     if (frame.frameIndex % 50 === 0) {
       console.log(
