@@ -2,102 +2,148 @@ import { TextContainerUpgrade } from '@evenrealities/even_hub_sdk'
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import type { DirectionEstimate } from '../audio/direction'
 import type { AppState } from '../state/machine'
-import { MAIN_CONTAINER_ID, MAIN_CONTAINER_NAME } from './containers'
+import {
+  LEFT_RADAR_CONTAINER_ID,
+  LEFT_RADAR_CONTAINER_NAME,
+  RIGHT_RADAR_CONTAINER_ID,
+  RIGHT_RADAR_CONTAINER_NAME,
+} from './containers'
 
-const BAR_WIDTH = 24
+export type RadarSide = 'left' | 'right' | null
 
-function makeBar(value: number, scale = 1): string {
-  const fill = Math.max(0, Math.min(BAR_WIDTH, Math.round(value * BAR_WIDTH * scale)))
-  return '#'.repeat(fill) + '-'.repeat(BAR_WIDTH - fill)
+export interface RadarSignal {
+  side: RadarSide
+  intensity: number
 }
 
-function formatDirection(estimate: DirectionEstimate | null): string | null {
+const PULSE_MS = 900
+const BASELINE_FLOOR = 0.0005
+const BLANK_RADAR = ' '
+
+const ARROW_FRAMES: Record<Exclude<RadarSide, null>, string[]> = {
+  left: [
+    [' ', ' ', '   <', '  <<<', '   <', ' ', ' '].join('\n'),
+    [' ', '  <', ' <<<', '<<<<<', ' <<<', '  <', ' '].join('\n'),
+    ['  <', ' <<<', '<<<<<', '<<<<<<<', '<<<<<', ' <<<', '  <'].join('\n'),
+  ],
+  right: [
+    [' ', ' ', '>   ', '>>> ', '>   ', ' ', ' '].join('\n'),
+    [' ', '>  ', '>>> ', '>>>>>', '>>> ', '>  ', ' '].join('\n'),
+    ['>  ', '>>> ', '>>>>>', '>>>>>>>', '>>>>>', '>>> ', '>  '].join('\n'),
+  ],
+}
+
+function clamp(value: number, min = 0, max = 1): number {
+  return Math.max(min, Math.min(max, value))
+}
+
+function sideFromDirection(estimate: DirectionEstimate | null): RadarSide {
   if (!estimate?.available) return null
   if (estimate.label !== 'left' && estimate.label !== 'right') return null
-  const angle = estimate.relativeAzimuthDeg?.toFixed(0) ?? '?'
-  const confidence = Math.round(estimate.confidence * 100)
-  return `${estimate.label} (${angle} deg, ${confidence}%)`
+  return estimate.label
 }
 
-export function renderState(
+export function radarSignalFromState(
   state: AppState,
   currentRms: number,
   baselineRms: number,
   direction: DirectionEstimate | null = null,
-): string {
-  if (state.kind === 'IDLE') {
-    const location = formatDirection(direction)
-    return (
-      `[*] listening\n` +
-      `\n` +
-      `level:    ${makeBar(currentRms, 6)}\n` +
-      `baseline: ${baselineRms.toFixed(4)}\n` +
-      (location ? `location: ${location}\n` : '') +
-      `\n` +
-      `double-tap to exit`
-    )
+): RadarSignal {
+  if (state.kind === 'ALERTING') {
+    return {
+      side: sideFromDirection(state.spike.direction),
+      intensity: clamp(state.spike.ratio / 5),
+    }
   }
-  // ALERTING
-  const intensity = Math.min(1, state.spike.ratio / 8)
-  const location = formatDirection(state.spike.direction)
-  return (
-    `*** SOUND DETECTED ***\n` +
-    `\n` +
-    (location ? `location:  ${location}\n` : '') +
-    `intensity: ${makeBar(intensity)}\n` +
-    `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
-    `ratio:     ${state.spike.ratio.toFixed(1)}x baseline\n`
-  )
+
+  return {
+    side: sideFromDirection(direction),
+    intensity: clamp(currentRms / Math.max(baselineRms, BASELINE_FLOOR) / 4),
+  }
 }
 
-// Coalescing renderer: throttles updates to minIntervalMs and serializes
-// bridge calls so we never have two textContainerUpgrade calls in flight at once.
-export class Renderer {
+function activeArrowContent(side: Exclude<RadarSide, null>, intensity: number): string {
+  const pulsePhase = (Date.now() % PULSE_MS) / PULSE_MS
+  const frames = ARROW_FRAMES[side]
+  const pulseIndex = Math.min(
+    frames.length - 1,
+    Math.floor(pulsePhase * frames.length),
+  )
+  if (intensity < 0.25) return frames[Math.min(pulseIndex, 1)]
+  return frames[pulseIndex]
+}
+
+export class RadarRenderer {
   private inFlight = false
   private lastRenderAt = 0
-  private pendingContent: string | null = null
+  private pendingSignal: RadarSignal | null = null
+  private leftContent = ''
+  private rightContent = ''
 
   constructor(
     private readonly bridge: EvenAppBridge,
-    private readonly minIntervalMs = 200,
+    private readonly minIntervalMs = 250,
   ) {}
 
-  render(content: string, force = false): void {
+  async initialize(): Promise<void> {
+    await this.updateSide('left', BLANK_RADAR)
+    await this.updateSide('right', BLANK_RADAR)
+  }
+
+  render(signal: RadarSignal, force = false): void {
     if (!force) {
       const now = Date.now()
       if (now - this.lastRenderAt < this.minIntervalMs || this.inFlight) {
-        this.pendingContent = content
+        this.pendingSignal = signal
         return
       }
     } else if (this.inFlight) {
-      this.pendingContent = content
+      this.pendingSignal = signal
       return
     }
-    void this.dispatch(content)
+    void this.dispatch(signal)
   }
 
-  private async dispatch(content: string): Promise<void> {
+  private async dispatch(signal: RadarSignal): Promise<void> {
     this.inFlight = true
     this.lastRenderAt = Date.now()
     try {
-      await this.bridge.textContainerUpgrade(
-        new TextContainerUpgrade({
-          containerID: MAIN_CONTAINER_ID,
-          containerName: MAIN_CONTAINER_NAME,
-          content,
-          contentOffset: 0,
-          contentLength: 0,
-        }),
-      )
+      await this.applySignal(signal)
     } finally {
       this.inFlight = false
-      const pending = this.pendingContent
-      if (pending !== null && pending !== content) {
-        this.pendingContent = null
+      const pending = this.pendingSignal
+      if (pending) {
+        this.pendingSignal = null
         void this.dispatch(pending)
-      } else {
-        this.pendingContent = null
       }
+    }
+  }
+
+  private async applySignal(signal: RadarSignal): Promise<void> {
+    const left = signal.side === 'left' ? activeArrowContent('left', signal.intensity) : BLANK_RADAR
+    const right =
+      signal.side === 'right' ? activeArrowContent('right', signal.intensity) : BLANK_RADAR
+
+    if (left !== this.leftContent) await this.updateSide('left', left)
+    if (right !== this.rightContent) await this.updateSide('right', right)
+  }
+
+  private async updateSide(side: Exclude<RadarSide, null>, content: string): Promise<void> {
+    const ok = await this.bridge.textContainerUpgrade(
+      new TextContainerUpgrade({
+        containerID: side === 'left' ? LEFT_RADAR_CONTAINER_ID : RIGHT_RADAR_CONTAINER_ID,
+        containerName: side === 'left' ? LEFT_RADAR_CONTAINER_NAME : RIGHT_RADAR_CONTAINER_NAME,
+        content,
+        contentOffset: 0,
+        contentLength: 0,
+      }),
+    )
+
+    if (ok) {
+      if (side === 'left') this.leftContent = content
+      else this.rightContent = content
+    } else {
+      console.warn(`[clearpath] radar text update failed (${side})`)
     }
   }
 }

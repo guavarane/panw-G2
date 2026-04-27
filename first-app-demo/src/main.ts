@@ -10,7 +10,7 @@ import { createAudioStream } from './audio/stream'
 import { createRmsTracker } from './audio/rms'
 import { createSpikeDetector } from './audio/spike-detector'
 import { buildStartupPage } from './ui/containers'
-import { Renderer, renderState } from './ui/render'
+import { RadarRenderer, radarSignalFromState } from './ui/render'
 import { createStateMachine } from './state/machine'
 
 const bridgeStatusEl = document.querySelector<HTMLElement>('#bridge-status')
@@ -22,7 +22,7 @@ function setText(el: HTMLElement | null, text: string) {
 }
 
 async function createStartupPage(bridge: Awaited<ReturnType<typeof waitForEvenAppBridge>>) {
-  const page = buildStartupPage('[*] starting...')
+  const page = buildStartupPage()
   let result = await bridge.createStartUpPageContainer(page)
   if (result === StartUpPageCreateResult.success) return result
 
@@ -59,16 +59,16 @@ async function main() {
     cooldownMs: 1000,
   })
   const fsm = createStateMachine()
-  const renderer = new Renderer(bridge, 200)
+  const renderer = new RadarRenderer(bridge, 250)
   const audio = createAudioStream(bridge, { channelCount: 4 })
   const direction = createDirectionEstimator({
-    minSignalRms: 0.0008,
-    minConfidence: 0.08,
-    smoothingWindowFrames: 30,
-    minStableFrames: 8,
-    minStableShare: 0.42,
-    switchMargin: 0.65,
-    holdFrames: 45,
+    minSignalRms: 0.00035,
+    minConfidence: 0.035,
+    smoothingWindowFrames: 18,
+    minStableFrames: 4,
+    minStableShare: 0.32,
+    switchMargin: 0.35,
+    holdFrames: 35,
   })
   let unsubscribeEvents: (() => void) | null = null
   let loggedAudioShape = false
@@ -102,12 +102,17 @@ async function main() {
         `[clearpath] frame=${frame.frameIndex} rms=${rms.getCurrent().toFixed(4)} baseline=${rms.getBaseline().toFixed(4)} channels=${frame.channelCount} state=${fsm.current().kind}`,
       )
     }
-    renderer.render(renderState(fsm.current(), rms.getCurrent(), rms.getBaseline(), direction.getLatest()))
+    renderer.render(
+      radarSignalFromState(fsm.current(), rms.getCurrent(), rms.getBaseline(), direction.getLatest()),
+    )
   })
 
   fsm.onChange(state => {
     console.log(`[clearpath] state -> ${state.kind}`)
-    renderer.render(renderState(state, rms.getCurrent(), rms.getBaseline(), direction.getLatest()), true)
+    renderer.render(
+      radarSignalFromState(state, rms.getCurrent(), rms.getBaseline(), direction.getLatest()),
+      true,
+    )
   })
 
   // Periodic tick for ALERTING auto-clear (4s)
@@ -155,6 +160,7 @@ async function main() {
 
   const imuStarted = await bridge.imuControl(true, ImuReportPace.P500)
   if (!imuStarted) console.warn('[clearpath] IMU capture failed to start')
+  await renderer.initialize()
   await audio.start()
   console.log('[clearpath] audio capture started')
 }
