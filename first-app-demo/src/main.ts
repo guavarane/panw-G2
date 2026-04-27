@@ -54,8 +54,8 @@ async function main() {
 
   const rms = createRmsTracker({ baselineHalfLifeSeconds: 10 })
   const spikes = createSpikeDetector({
-    ratioThreshold: 1.9,
-    minDurationMs: 150,
+    ratioThreshold: 1.6,
+    minDurationMs: 100,
     cooldownMs: 1000,
   })
   const fsm = createStateMachine()
@@ -63,7 +63,7 @@ async function main() {
   const audio = createAudioStream(bridge, { channelCount: 4 })
   const direction = createDirectionEstimator({
     minSignalRms: 0.00035,
-    minConfidence: 0.035,
+    minConfidence: 0.015,
     smoothingWindowFrames: 18,
     minStableFrames: 4,
     minStableShare: 0.32,

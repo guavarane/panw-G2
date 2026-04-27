@@ -18,13 +18,14 @@ export interface RadarSignal {
 
 const PULSE_MS = 900
 const BASELINE_FLOOR = 0.0005
+const GLYPH_TRIGGER_RATIO = 1.6
 const BLANK_RADAR = ' '
 
 const ARROW_FRAMES: Record<Exclude<RadarSide, null>, string[]> = {
   left: [
-    [' ', ' ', '   <', '  <<<', '   <', ' ', ' '].join('\n'),
-    [' ', '  <', ' <<<', '<<<<<', ' <<<', '  <', ' '].join('\n'),
-    ['  <', ' <<<', '<<<<<', '<<<<<<<', '<<<<<', ' <<<', '  <'].join('\n'),
+    [' ', ' ', '              <', '            <<<', '              <', ' ', ' '].join('\n'),
+    [' ', '              <', '            <<<', '          <<<<<', '            <<<', '              <', ' '].join('\n'),
+    ['              <', '            <<<', '          <<<<<', '        <<<<<<<', '          <<<<<', '            <<<', '              <'].join('\n'),
   ],
   right: [
     [' ', ' ', '>   ', '>>> ', '>   ', ' ', ' '].join('\n'),
@@ -49,16 +50,26 @@ export function radarSignalFromState(
   baselineRms: number,
   direction: DirectionEstimate | null = null,
 ): RadarSignal {
+  const currentRatio = currentRms / Math.max(baselineRms, BASELINE_FLOOR)
+
   if (state.kind === 'ALERTING') {
+    const displayDirection = state.spike.direction ?? direction
     return {
-      side: sideFromDirection(state.spike.direction),
+      side: sideFromDirection(displayDirection),
       intensity: clamp(state.spike.ratio / 5),
+    }
+  }
+
+  if (currentRatio < GLYPH_TRIGGER_RATIO) {
+    return {
+      side: null,
+      intensity: 0,
     }
   }
 
   return {
     side: sideFromDirection(direction),
-    intensity: clamp(currentRms / Math.max(baselineRms, BASELINE_FLOOR) / 4),
+    intensity: clamp(currentRatio / 5),
   }
 }
 
