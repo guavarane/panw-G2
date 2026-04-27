@@ -104,6 +104,9 @@ export function createOpenaiClassifier(apiKey: string | undefined): OpenaiClassi
           signal: controller.signal,
           body: JSON.stringify({
             model: OPENAI_MODEL,
+            // gpt-4o-audio-preview rejects response_format=json_object, so we
+            // rely on the system prompt to keep the output JSON-only and on
+            // parseClassification() to strip any markdown fences if they leak.
             modalities: ['text'],
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
@@ -114,7 +117,6 @@ export function createOpenaiClassifier(apiKey: string | undefined): OpenaiClassi
                 ],
               },
             ],
-            response_format: { type: 'json_object' },
             temperature: 0.2,
           }),
         })
@@ -153,9 +155,19 @@ export function createOpenaiClassifier(apiKey: string | undefined): OpenaiClassi
 }
 
 function parseClassification(text: string): OpenaiClassification | null {
+  // The model may occasionally wrap output in markdown fences or prepend a
+  // sentence; pull out the first {...} block before parsing.
+  const trimmed = text.trim()
+  const fenceStripped = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+  const start = fenceStripped.indexOf('{')
+  const end = fenceStripped.lastIndexOf('}')
+  const candidate = start >= 0 && end > start ? fenceStripped.slice(start, end + 1) : fenceStripped
+
   let parsed: unknown
   try {
-    parsed = JSON.parse(text)
+    parsed = JSON.parse(candidate)
   } catch {
     console.warn('[openai] non-JSON response:', text.slice(0, 200))
     return null
