@@ -50,7 +50,10 @@ async function main() {
     cooldownMs: 800,
   })
   const approach = createApproachDetector()
-  const sampleBuffer = createSampleBuffer(1200)   // keep last 1.2 s for heuristic + LLM classification
+  // Keep 4 s of audio so a delayed LLM call can grab a 2.5 s window AFTER
+  // the spike fires (lets full phrases like "excuse me, I'm on your left"
+  // finish before we send to the model).
+  const sampleBuffer = createSampleBuffer(4000)
   const classifier = createClassifier()
   // OpenAI is preferred (handles speech transcription + sound classification in one call).
   // Gemini is the fallback if OpenAI key is missing — same role but classification-only.
@@ -80,11 +83,17 @@ async function main() {
       approach.startWatch(spike.peakRms, frameIndex)
 
       // Fire-and-forget LLM classification — upgrades the alert label when it returns.
-      // Captures a wider 1 s window for richer context.
+      // We wait ~1.5 s after the spike to let the user finish speaking the
+      // sentence (e.g. "excuse me, I'm on your left" takes ~2.2 s); then we
+      // grab the trailing 2.5 s of audio so the model gets the full phrase
+      // including ~1 s of pre-spike context.
       // OpenAI handles both speech transcription and sound classification in one call.
       // Gemini fallback is classification-only.
-      const audioForLlm = sampleBuffer.getRecent(1000)
-      const llmCall: Promise<Classification | null> = openaiClassifier.isAvailable()
+      const SPIKE_TO_LLM_DELAY_MS = 1500
+      const LLM_AUDIO_WINDOW_MS = 2500
+      const startLlm = (): Promise<Classification | null> => {
+        const audioForLlm = sampleBuffer.getRecent(LLM_AUDIO_WINDOW_MS)
+        return openaiClassifier.isAvailable()
         ? openaiClassifier.classify(audioForLlm).then(result => {
             if (!result) return null
             const classification: Classification = {
@@ -118,20 +127,23 @@ async function main() {
             } as Classification
           })
         : Promise.resolve(null)
+      }
 
-      llmCall.then(classification => {
-        if (!classification) return
-        // Apply to whatever alert is currently active. With rapid-fire events
-        // (claps, footsteps) every new spike replaces the alert; we still
-        // want the LLM upgrade to land on the active alert since adjacent
-        // spikes are usually the same sound.
-        const currentState = fsm.current()
-        if (currentState.kind !== 'ALERTING') {
-          console.log('[clearpath] LLM result arrived but alert already cleared — discarding')
-          return
-        }
-        fsm.attachClassification(classification)
-      }).catch(err => console.warn('[clearpath] LLM classify failed:', err))
+      setTimeout(() => {
+        startLlm().then(classification => {
+          if (!classification) return
+          // Apply to whatever alert is currently active. With rapid-fire events
+          // (claps, footsteps) every new spike replaces the alert; we still
+          // want the LLM upgrade to land on the active alert since adjacent
+          // spikes are usually the same sound.
+          const currentState = fsm.current()
+          if (currentState.kind !== 'ALERTING') {
+            console.log('[clearpath] LLM result arrived but alert already cleared — discarding')
+            return
+          }
+          fsm.attachClassification(classification)
+        }).catch(err => console.warn('[clearpath] LLM classify failed:', err))
+      }, SPIKE_TO_LLM_DELAY_MS)
     }
     const verdict = approach.feed(rms.getCurrent(), frameIndex)
     if (verdict) {

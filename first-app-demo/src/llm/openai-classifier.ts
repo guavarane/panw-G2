@@ -36,7 +36,7 @@ const SYSTEM_PROMPT = `You are an audio analyzer for accessibility software help
 Listen to the attached audio clip and respond with JSON only — no commentary, no markdown.
 
 THREE CATEGORIES:
-- "speech": clear human speech in any language → transcribe the exact words
+- "speech": ANY human speech in any language, even brief, partial, or background — transcribe whatever words you can hear, including incomplete phrases. Strongly prefer this category if you hear *any* identifiable words.
 - "whistle_bell": tonal attention-getting alerts — bicycle bells, doorbells, smoke alarms, sirens, car horns, whistles, phone ringtones
 - "other": anything else (footsteps, claps, dogs barking, vehicles, ambient noise, etc.) — give a short label
 

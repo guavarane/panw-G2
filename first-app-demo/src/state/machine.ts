@@ -20,7 +20,10 @@ export interface StateMachine {
   onChange(handler: (state: AppState) => void): () => void
 }
 
-const ALERT_DURATION_MS = 4000
+// Bumped from 4 s to 6 s so late-arriving LLM transcripts (we delay the
+// LLM call by 1.5 s to let speech complete + ~1.5 s round-trip) still have
+// at least 3 s of on-screen time after the upgrade lands.
+const ALERT_DURATION_MS = 6000
 
 export function createStateMachine(): StateMachine {
   let state: AppState = { kind: 'IDLE' }
