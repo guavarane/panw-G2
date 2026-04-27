@@ -49,13 +49,13 @@ const DEFAULT_MIC_LAYOUT: readonly MicPosition[] = [
   { x: 1, y: -1 },
 ]
 const HISTORY_LIMIT = 20
-const DEFAULT_SMOOTHING_WINDOW_FRAMES = 30
-const DEFAULT_MIN_STABLE_FRAMES = 8
-const DEFAULT_MIN_STABLE_SHARE = 0.42
-const DEFAULT_SWITCH_MARGIN = 0.65
-const DEFAULT_HOLD_FRAMES = 45
-const SIDE_DEAD_ZONE_DEGREES = 25
-const REAR_DEAD_ZONE_DEGREES = 155
+const DEFAULT_SMOOTHING_WINDOW_FRAMES = 18
+const DEFAULT_MIN_STABLE_FRAMES = 4
+const DEFAULT_MIN_STABLE_SHARE = 0.32
+const DEFAULT_SWITCH_MARGIN = 0.35
+const DEFAULT_HOLD_FRAMES = 35
+const SIDE_DEAD_ZONE_DEGREES = 10
+const REAR_DEAD_ZONE_DEGREES = 172
 
 interface DirectionVote {
   label: string
@@ -151,8 +151,8 @@ function createUnavailableEstimate(
 export function createDirectionEstimator(
   opts: DirectionEstimatorOptions = {},
 ): DirectionEstimator {
-  const minSignalRms = opts.minSignalRms ?? 0.001
-  const minConfidence = opts.minConfidence ?? 0.08
+  const minSignalRms = opts.minSignalRms ?? 0.00035
+  const minConfidence = opts.minConfidence ?? 0.035
   const smoothingWindowFrames = opts.smoothingWindowFrames ?? DEFAULT_SMOOTHING_WINDOW_FRAMES
   const minStableFrames = opts.minStableFrames ?? DEFAULT_MIN_STABLE_FRAMES
   const minStableShare = opts.minStableShare ?? DEFAULT_MIN_STABLE_SHARE
