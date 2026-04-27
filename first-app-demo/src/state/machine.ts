@@ -1,11 +1,24 @@
 import type { SpikeEvent } from '../audio/spike-detector'
 import type { Classification } from '../audio/classifier'
+import type { DirectionEstimate } from '../audio/direction'
 
+// A spike with Henry's direction estimate attached. The spike itself is
+// detected by the local pipeline; the direction comes from the multi-mic
+// localization layer.
+export type LocalizedSpikeEvent = SpikeEvent & {
+  direction: DirectionEstimate | null
+}
+
+// ALERTING carries everything we know about a sound: where it came from
+// (Henry's direction), what it sounds like locally (heuristic classification),
+// whether it's approaching (RMS-trend watcher), and what the LLM later
+// confirmed it was (LLM classification, which replaces the heuristic when
+// it lands).
 export type AppState =
   | { kind: 'IDLE' }
   | {
       kind: 'ALERTING'
-      spike: SpikeEvent
+      spike: LocalizedSpikeEvent
       startedAt: number
       approaching: boolean
       classification?: Classification
@@ -13,7 +26,7 @@ export type AppState =
 
 export interface StateMachine {
   current(): AppState
-  alert(spike: SpikeEvent, classification?: Classification): void
+  alert(spike: LocalizedSpikeEvent, classification?: Classification): void
   upgradeToApproaching(): void
   attachClassification(classification: Classification): void
   tick(now: number): void
