@@ -103,7 +103,11 @@ async function main() {
     const unsubscribe = unsubscribeEvents
     unsubscribeEvents = null
     unsubscribe?.()
-    await Promise.allSettled([audio.stop(), bridge.imuControl(false)])
+    await Promise.allSettled([
+      audio.stop(),
+      // imuControl(false) also throws on simulator — wrap so cleanup completes
+      Promise.resolve(bridge.imuControl(false)).catch(() => {}),
+    ])
   }
 
   audio.onFrame(frame => {
@@ -259,8 +263,17 @@ async function main() {
     void stopSensors()
   })
 
-  const imuStarted = await bridge.imuControl(true, ImuReportPace.P500)
-  if (!imuStarted) console.warn('[clearpath] IMU capture failed to start')
+  // imuControl is a glasses-only API — the simulator throws "unknown variant
+  // imuControl" because its bridge stub doesn't implement it. Catch and
+  // continue: direction estimator falls back to audio-only if no IMU samples
+  // arrive, and the rest of the demo (audio capture, classification, radar
+  // arrows from the multi-mic data) keeps working.
+  try {
+    const imuStarted = await bridge.imuControl(true, ImuReportPace.P500)
+    if (!imuStarted) console.warn('[clearpath] IMU capture failed to start')
+  } catch (err) {
+    console.warn('[clearpath] IMU not supported in this host (likely simulator):', err)
+  }
   await renderer.initialize()
   await audio.start()
   console.log('[clearpath] audio capture started')
