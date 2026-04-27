@@ -11,9 +11,9 @@ function makeBar(value: number, scale = 1): string {
   return '#'.repeat(fill) + '-'.repeat(BAR_WIDTH - fill)
 }
 
-function formatDirection(estimate: DirectionEstimate | null): string {
-  if (!estimate) return 'listening'
-  if (!estimate.available) return estimate.reason
+function formatDirection(estimate: DirectionEstimate | null): string | null {
+  if (!estimate?.available) return null
+  if (estimate.label !== 'left' && estimate.label !== 'right') return null
   const angle = estimate.relativeAzimuthDeg?.toFixed(0) ?? '?'
   const confidence = Math.round(estimate.confidence * 100)
   return `${estimate.label} (${angle} deg, ${confidence}%)`
@@ -26,22 +26,24 @@ export function renderState(
   direction: DirectionEstimate | null = null,
 ): string {
   if (state.kind === 'IDLE') {
+    const location = formatDirection(direction)
     return (
       `[*] listening\n` +
       `\n` +
       `level:    ${makeBar(currentRms, 6)}\n` +
       `baseline: ${baselineRms.toFixed(4)}\n` +
-      `location: ${formatDirection(direction)}\n` +
+      (location ? `location: ${location}\n` : '') +
       `\n` +
       `double-tap to exit`
     )
   }
   // ALERTING
   const intensity = Math.min(1, state.spike.ratio / 8)
+  const location = formatDirection(state.spike.direction)
   return (
     `*** SOUND DETECTED ***\n` +
     `\n` +
-    `location:  ${formatDirection(state.spike.direction)}\n` +
+    (location ? `location:  ${location}\n` : '') +
     `intensity: ${makeBar(intensity)}\n` +
     `peak:      ${state.spike.peakRms.toFixed(3)}\n` +
     `ratio:     ${state.spike.ratio.toFixed(1)}x baseline\n`

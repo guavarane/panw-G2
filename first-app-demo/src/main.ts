@@ -21,6 +21,21 @@ function setText(el: HTMLElement | null, text: string) {
   if (el) el.textContent = text
 }
 
+async function createStartupPage(bridge: Awaited<ReturnType<typeof waitForEvenAppBridge>>) {
+  const page = buildStartupPage('[*] starting...')
+  let result = await bridge.createStartUpPageContainer(page)
+  if (result === StartUpPageCreateResult.success) return result
+
+  console.warn(`[clearpath] startup page create failed (${result}); shutting down stale page and retrying`)
+  await bridge.shutDownPageContainer(1).catch(err => {
+    console.warn('[clearpath] stale page shutdown failed before retry:', err)
+  })
+  await new Promise(resolve => setTimeout(resolve, 300))
+
+  result = await bridge.createStartUpPageContainer(page)
+  return result
+}
+
 async function main() {
   setText(bridgeStatusEl, 'Waiting')
   setText(detailEl, 'Connecting to Even Hub bridge...')
@@ -28,7 +43,7 @@ async function main() {
   const bridge = await waitForEvenAppBridge()
   setText(bridgeStatusEl, 'Ready')
 
-  const result = await bridge.createStartUpPageContainer(buildStartupPage('[*] starting...'))
+  const result = await createStartupPage(bridge)
   if (result !== StartUpPageCreateResult.success) {
     setText(pageStatusEl, `Failed (${result})`)
     setText(detailEl, `createStartUpPageContainer returned ${result}`)
@@ -39,14 +54,22 @@ async function main() {
 
   const rms = createRmsTracker({ baselineHalfLifeSeconds: 10 })
   const spikes = createSpikeDetector({
-    ratioThreshold: 2.5,
+    ratioThreshold: 1.9,
     minDurationMs: 150,
     cooldownMs: 1000,
   })
   const fsm = createStateMachine()
   const renderer = new Renderer(bridge, 200)
   const audio = createAudioStream(bridge, { channelCount: 4 })
-  const direction = createDirectionEstimator({ minConfidence: 0.1 })
+  const direction = createDirectionEstimator({
+    minSignalRms: 0.0008,
+    minConfidence: 0.08,
+    smoothingWindowFrames: 30,
+    minStableFrames: 8,
+    minStableShare: 0.42,
+    switchMargin: 0.65,
+    holdFrames: 45,
+  })
   let unsubscribeEvents: (() => void) | null = null
   let loggedAudioShape = false
   let stoppingSensors = false
