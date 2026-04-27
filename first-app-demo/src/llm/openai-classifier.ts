@@ -14,7 +14,12 @@ import type { SoundClass } from '../audio/classifier'
 import { bytesToBase64, encodeWav } from '../audio/wav-encoder'
 
 const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions'
-const OPENAI_MODEL = 'gpt-4o-audio-preview'
+// gpt-4o-mini-audio-preview: roughly 4x cheaper and 2x faster than the
+// full gpt-4o-audio-preview, with marginally lower accuracy. For our
+// 3-category task (speech / whistle_bell / other) the mini model is
+// plenty — and credits stretch much further.
+// To swap back: change to 'gpt-4o-audio-preview'.
+const OPENAI_MODEL = 'gpt-4o-mini-audio-preview'
 const REQUEST_TIMEOUT_MS = 8000
 const MIN_CALL_INTERVAL_MS = 1500
 
