@@ -1,7 +1,6 @@
 import { TextContainerUpgrade } from '@evenrealities/even_hub_sdk'
 import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 import type { AppState } from '../state/machine'
-import type { SoundClass } from '../audio/classifier'
 import { MAIN_CONTAINER_ID, MAIN_CONTAINER_NAME } from './containers'
 
 const BAR_WIDTH = 24
@@ -9,17 +8,6 @@ const BAR_WIDTH = 24
 function makeBar(value: number, scale = 1): string {
   const fill = Math.max(0, Math.min(BAR_WIDTH, Math.round(value * BAR_WIDTH * scale)))
   return '#'.repeat(fill) + '-'.repeat(BAR_WIDTH - fill)
-}
-
-// Display label for each sound class. 'other' falls back to the generic
-// label so we don't lie about a confident classification when we don't
-// have one.
-function classLabel(c: SoundClass): string {
-  switch (c) {
-    case 'voice': return 'VOICE'
-    case 'bell': return 'WHISTLE/BELL'
-    case 'other': return 'SOUND'
-  }
 }
 
 export function renderState(state: AppState, currentRms: number, baselineRms: number): string {
@@ -33,15 +21,16 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
       `double-tap to exit`
     )
   }
-  // ALERTING — three distinct rendering modes:
-  //   1. LLM detected speech → show the quoted transcript prominently
-  //   2. LLM classified non-speech → show description with urgency markers
-  //   3. Pre-LLM (heuristic only or pending) → hedged or generic placeholder
+  // ALERTING — only the LLM's verdict shows on screen. Until the LLM
+  // responds, we display a generic placeholder so the user never sees a
+  // confidently-wrong heuristic label. The heuristic still runs in the
+  // background for console diagnostics, but nothing about it surfaces here.
   const intensity = Math.min(1, state.spike.ratio / 8)
   const c = state.classification
+  const llmReady = c?.source === 'llm'
 
   // SPEECH MODE — the most useful output for the deaf/hoh user.
-  if (c?.transcript) {
+  if (llmReady && c?.transcript) {
     const approachingPrefix = state.approaching ? 'APPROACHING — ' : ''
     return (
       `${approachingPrefix}SOMEONE SAID:\n` +
@@ -52,24 +41,13 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
     )
   }
 
-  // NON-SPEECH ALERT MODE
-  let headline: string
-  let sourceTag: string
-  if (c?.source === 'llm' && c.description) {
-    headline = c.description.toUpperCase()
-    sourceTag = '[AI]'
-  } else if (c?.source === 'heuristic' && c.className !== 'other') {
-    headline = `SOUND (maybe ${classLabel(c.className).toLowerCase()}?)`
-    sourceTag = '[~]'
-  } else {
-    headline = 'SOUND DETECTED...'
-    sourceTag = ''
-  }
-
+  // NON-SPEECH ALERT MODE — show LLM description if available, else placeholder.
+  const headline = llmReady && c?.description ? c.description.toUpperCase() : 'SOUND DETECTED...'
+  const sourceTag = llmReady ? '[AI]' : ''
   const urgencyMarker =
-    c?.source === 'llm' && c.urgency === 'high' ? '!!!'
-    : c?.source === 'llm' && c.urgency === 'medium' ? '!!'
-    : c?.source === 'llm' && c.urgency === 'low' ? '!'
+    llmReady && c?.urgency === 'high' ? '!!!'
+    : llmReady && c?.urgency === 'medium' ? '!!'
+    : llmReady && c?.urgency === 'low' ? '!'
     : '***'
 
   if (state.approaching) {
