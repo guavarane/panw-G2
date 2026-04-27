@@ -36,6 +36,7 @@ export interface Classification {
   features?: ClassifierFeatures   // present for heuristic
   description?: string            // present for LLM — short rich label
   urgency?: 'low' | 'medium' | 'high'  // present for LLM
+  transcript?: string             // present when LLM detected speech — exact words said
 }
 
 export interface Classifier {

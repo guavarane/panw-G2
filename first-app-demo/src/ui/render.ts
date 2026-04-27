@@ -34,14 +34,26 @@ export function renderState(state: AppState, currentRms: number, baselineRms: nu
       `double-tap to exit`
     )
   }
-  // ALERTING
+  // ALERTING — three distinct rendering modes:
+  //   1. LLM detected speech → show the quoted transcript prominently
+  //   2. LLM classified non-speech → show description with urgency markers
+  //   3. Pre-LLM (heuristic only or pending) → hedged or generic placeholder
   const intensity = Math.min(1, state.spike.ratio / 8)
   const c = state.classification
 
-  // Build the headline so the user can tell when we're guessing vs confident:
-  //  - LLM result   → bold, e.g. "BICYCLE BELL"  (with [AI] tag)
-  //  - Heuristic    → hedged, e.g. "SOUND (maybe footsteps?)"  (with [~] tag)
-  //  - Nothing yet  → plain "SOUND DETECTED..."
+  // SPEECH MODE — the most useful output for the deaf/hoh user.
+  if (c?.transcript) {
+    const approachingPrefix = state.approaching ? 'APPROACHING — ' : ''
+    return (
+      `${approachingPrefix}SOMEONE SAID:\n` +
+      `\n` +
+      `"${c.transcript}"\n` +
+      `\n` +
+      `[AI]`
+    )
+  }
+
+  // NON-SPEECH ALERT MODE
   let headline: string
   let sourceTag: string
   if (c?.source === 'llm' && c.description) {

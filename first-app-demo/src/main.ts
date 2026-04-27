@@ -9,7 +9,8 @@ import { createRmsTracker } from './audio/rms'
 import { createSpikeDetector } from './audio/spike-detector'
 import { createApproachDetector } from './audio/approach-detector'
 import { createSampleBuffer } from './audio/buffer'
-import { createClassifier } from './audio/classifier'
+import { createClassifier, type Classification } from './audio/classifier'
+import { createOpenaiClassifier, openaiTypeToSoundClass } from './llm/openai-classifier'
 import { createLlmClassifier } from './llm/gemini-classifier'
 import { buildStartupPage } from './ui/containers'
 import { Renderer, renderState } from './ui/render'
@@ -51,8 +52,12 @@ async function main() {
   const approach = createApproachDetector()
   const sampleBuffer = createSampleBuffer(1200)   // keep last 1.2 s for heuristic + LLM classification
   const classifier = createClassifier()
-  const llmClassifier = createLlmClassifier(import.meta.env.VITE_GEMINI_API_KEY)
-  console.log(`[clearpath] LLM classifier ${llmClassifier.isAvailable() ? 'enabled' : 'disabled (no VITE_GEMINI_API_KEY)'}`)
+  // OpenAI is preferred (handles speech transcription + sound classification in one call).
+  // Gemini is the fallback if OpenAI key is missing — same role but classification-only.
+  const openaiClassifier = createOpenaiClassifier(import.meta.env.VITE_OPENAI_API_KEY)
+  const geminiClassifier = createLlmClassifier(import.meta.env.VITE_GEMINI_API_KEY)
+  const llmActive = openaiClassifier.isAvailable() ? 'OpenAI' : geminiClassifier.isAvailable() ? 'Gemini (fallback)' : 'none (heuristic only)'
+  console.log(`[clearpath] LLM classifier: ${llmActive}`)
   const fsm = createStateMachine()
   const renderer = new Renderer(bridge, 200)
   const audio = createAudioStream(bridge)
@@ -76,34 +81,57 @@ async function main() {
 
       // Fire-and-forget LLM classification — upgrades the alert label when it returns.
       // Captures a wider 1 s window for richer context.
-      if (llmClassifier.isAvailable()) {
-        const audioForLlm = sampleBuffer.getRecent(1000)
-        llmClassifier.classify(audioForLlm).then(llmResult => {
-          if (!llmResult) return
-          // Apply to whatever alert is currently active. Previous design tried
-          // to match the original spike's frameIndex, but with rapid-fire
-          // events (claps, footsteps) every new spike would replace the alert
-          // and the LLM result would be discarded. Better to upgrade whatever
-          // alert is on screen — for repeated similar sounds the label is
-          // still correct.
-          const currentState = fsm.current()
-          if (currentState.kind !== 'ALERTING') {
-            console.log('[clearpath] LLM result arrived but alert already cleared — discarding')
-            return
-          }
-          console.log(
-            `[clearpath] CLASS[llm] ${llmResult.className} "${llmResult.description}" ` +
-            `conf=${llmResult.confidence.toFixed(2)} urgency=${llmResult.urgency}`
-          )
-          fsm.attachClassification({
-            className: llmResult.className,
-            confidence: llmResult.confidence,
-            source: 'llm',
-            description: llmResult.description,
-            urgency: llmResult.urgency,
+      // OpenAI handles both speech transcription and sound classification in one call.
+      // Gemini fallback is classification-only.
+      const audioForLlm = sampleBuffer.getRecent(1000)
+      const llmCall: Promise<Classification | null> = openaiClassifier.isAvailable()
+        ? openaiClassifier.classify(audioForLlm).then(result => {
+            if (!result) return null
+            const classification: Classification = {
+              className: openaiTypeToSoundClass(result.type),
+              confidence: result.confidence,
+              source: 'llm',
+              description: result.description,
+              transcript: result.transcript,
+              urgency: result.urgency,
+            }
+            console.log(
+              `[clearpath] CLASS[openai] type=${result.type} ` +
+              (result.transcript ? `transcript="${result.transcript}" ` : `description="${result.description}" `) +
+              `urgency=${result.urgency} conf=${result.confidence.toFixed(2)}`
+            )
+            return classification
           })
-        }).catch(err => console.warn('[clearpath] LLM classify failed:', err))
-      }
+        : geminiClassifier.isAvailable()
+        ? geminiClassifier.classify(audioForLlm).then(result => {
+            if (!result) return null
+            console.log(
+              `[clearpath] CLASS[gemini] ${result.className} "${result.description}" ` +
+              `conf=${result.confidence.toFixed(2)} urgency=${result.urgency}`
+            )
+            return {
+              className: result.className,
+              confidence: result.confidence,
+              source: 'llm',
+              description: result.description,
+              urgency: result.urgency,
+            } as Classification
+          })
+        : Promise.resolve(null)
+
+      llmCall.then(classification => {
+        if (!classification) return
+        // Apply to whatever alert is currently active. With rapid-fire events
+        // (claps, footsteps) every new spike replaces the alert; we still
+        // want the LLM upgrade to land on the active alert since adjacent
+        // spikes are usually the same sound.
+        const currentState = fsm.current()
+        if (currentState.kind !== 'ALERTING') {
+          console.log('[clearpath] LLM result arrived but alert already cleared — discarding')
+          return
+        }
+        fsm.attachClassification(classification)
+      }).catch(err => console.warn('[clearpath] LLM classify failed:', err))
     }
     const verdict = approach.feed(rms.getCurrent(), frameIndex)
     if (verdict) {

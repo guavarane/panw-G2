@@ -13,8 +13,8 @@
     },
     {
       "name": "network",
-      "desc": "Send short audio clips to Gemini for richer sound classification (e.g. 'bicycle bell' vs generic 'sound').",
-      "whitelist": ["generativelanguage.googleapis.com"]
+      "desc": "Send short audio clips to OpenAI (or Gemini) for richer sound classification and speech transcription (e.g. 'bicycle bell' or quoted 'excuse me').",
+      "whitelist": ["api.openai.com", "generativelanguage.googleapis.com"]
     }
   ],
   "supported_languages": ["en"]
